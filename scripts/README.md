@@ -92,3 +92,53 @@ resumable — completed runs are reused.
   follow-ups; earlier studies in this project already examined it.
 - `sys.path` is adjusted at the top of each script so they run from the project
   root without installing the package.
+
+### `vanilla_imbalance_repair.py` — supervised-only repair
+
+Runs a separate 39-setting long-tail protocol with cross-entropy for target and
+preservation samples, zero KD/feature weights, and no student training. It evaluates
+the original and repaired classifier directly after validation selection. See the
+[protocol](../docs/vanilla-imbalance-repair.md).
+
+```bash
+python3 scripts/vanilla_imbalance_repair.py --all --dry-run
+```
+
+### `imbalance_repair_study.py` — supervised-only results
+
+After all 39 CE-only repair settings finish, aggregate the original versus
+repaired classifier test results. It refuses incomplete or KD-trained artifacts.
+
+```bash
+python3 scripts/imbalance_repair_study.py \
+  --vanilla-root runs/vanilla-imbalance-repair \
+  --output docs/vanilla-imbalance-repair-results.md
+```
+
+### `channel_selection_ablation.py` — what the screening contributes
+
+Reruns the repair on the settings that produced one, replacing the screened channels
+with a control set: uniform random over every scored channel, random matched to the
+screened per-stage counts, or the lowest ranked channels that passed causal validation.
+Each setting keeps the budget and learning rate its original run selected, and
+`downstream_kd` is disabled because the claim concerns the teacher.
+
+Settings whose validated pool is smaller than twice the budget skip the antiscreened
+arm, which would otherwise restate the screened set rather than oppose it.
+
+```bash
+python3 scripts/channel_selection_ablation.py --plan
+python3 scripts/channel_selection_ablation.py --dry-run
+python3 scripts/channel_selection_ablation.py --device cuda:0
+```
+
+### `channel_selection_stats.py` — screened against each control
+
+Compares the arms on repaired-teacher target recall with a two-sided Wilcoxon
+signed-rank test over settings, exact zeros dropped, each randomized arm contributing
+the mean over its draws. Pass the margin that was declared before the runs finished;
+the script reports the verdict against it rather than inferring one from the numbers.
+
+```bash
+python3 scripts/channel_selection_stats.py --predeclared-margin 0.5
+```
