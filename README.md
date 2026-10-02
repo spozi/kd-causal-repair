@@ -208,6 +208,17 @@ Dataset downloads, Git LFS transfers, and package installs stream live byte
 progress, and the queue prints a per-GPU status table every 30 seconds
 (`--status-interval`, or `--stream-logs` to mirror worker output inline).
 
+For the matching 52-setting ResNet teacher studies and the remaining
+teacher--student and distillation-loss comparisons, see
+[`paper/full-matrix-run-plan.md`](paper/full-matrix-run-plan.md). The teacher
+architecture runner supports `--all-jobs --dry-run` to list missing settings
+before starting GPU training.
+
+The [supervised-only imbalance repair protocol](docs/vanilla-imbalance-repair.md)
+reuses the original classifiers at IF10/50/100 and repairs them with labeled
+cross-entropy alone. It trains no KD student and evaluates each selected repaired
+classifier directly. Results will be reported after the 39 new repair settings run.
+
 To compare direct student surgery without distillation against both supervised and KD controls, run:
 
 ```bash

@@ -21,8 +21,6 @@ paper/journal - ieee/note.md
 paper/results-discussion.md
 paper/main.md
 paper/introduction.md
-paper/full-matrix-run-plan.md
-docs/vanilla-imbalance-repair.md
 
 # Third-party baseline checkouts and the papers they come from.
 baseline/
