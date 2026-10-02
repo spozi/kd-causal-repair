@@ -460,7 +460,10 @@ def add_overview(workbook: Workbook, root: Path, archive: Path, data: dict[str, 
         ("Generated UTC", datetime.now(timezone.utc).isoformat()),
         ("Source archive", archive.name),
         ("Archive SHA-256", sha256(archive)),
-        ("Source revision", "89992ca1495ab357283613db30556fea44b2622d"),
+        # Rewritten 2026-10-02 to drop co-author trailers; the archive records the old
+        # hash, which docs/history-rewrite.md maps to this one with the same tree.
+        ("Source revision", "059d6296434466615b2abe7d44a82e095592696c"),
+        ("Source revision as recorded", "89992ca1495ab357283613db30556fea44b2622d"),
         ("Matrix protocol SHA-256", summary["matrix_protocol_sha256"]),
         ("Planned jobs", summary["job_count"]),
         ("Terminal jobs", sum(row["terminal"] for row in data["Matrix Results"])),

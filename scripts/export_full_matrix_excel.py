@@ -596,7 +596,7 @@ def provenance_rows(r: Results) -> list[dict]:
     archives = ROOT / "compiled-results" / "full-matrix-20260928"
     rows = [{"Item": "Generated (UTC)", "Value": datetime.now(timezone.utc).isoformat(timespec="seconds")},
             {"Item": "Repository commit when exported", "Value": subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()},
-            {"Item": "Code deployed to the servers", "Value": "commit 7482848; scripts/teacher_architecture_study.py replaced by commit d544c0f on 2026-09-28 (scaled-arm baseline re-confirmation uses the recorded device)"},
+            {"Item": "Code deployed to the servers", "Value": "commit d6251aa (recorded at deployment as 7482848); scripts/teacher_architecture_study.py replaced by commit c30ba78 (recorded as d544c0f) on 2026-09-28 (scaled-arm baseline re-confirmation uses the recorded device). Same trees under either hash; see docs/history-rewrite.md"},
             {"Item": "Hardware and precision", "Value": "NVIDIA GeForce RTX 5060 Ti, bfloat16, PyTorch 2.14.0+cu132, CUDA 13.2 (all runs, all studies)"},
             {"Item": "Servers (full matrix, 27-28 Sep 2026)", "Value": "A: 4 GPUs, 15.4 CPU cores; B: 2 GPUs, 30.7 cores; C: 1 GPU, 15.4 cores (Vast.ai containers)"},
             {"Item": "Seeds", "Value": "Teacher seed 41; student seeds 42, 43, 44; split seed 2026"}]
