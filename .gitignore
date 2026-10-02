@@ -16,3 +16,36 @@ docs/distillation-baselines-results.md
 docs/distillation-baselines-statistics.md
 docs/distillation-baselines-comparison.md
 docs/architecture-studies-statistics.md
+compiled-results/
+
+# Third-party baseline checkouts and the papers they come from.
+baseline/
+
+# Unrelated local writing.
+news/
+
+# Leftover from an aborted clone of this repository into itself.
+kd-repair/
+
+# LaTeX build intermediates. The figure PDFs under paper/*/figures/ are
+# sources and stay tracked, so *.pdf is deliberately not listed here.
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.log
+*.nav
+*.out
+*.run.xml
+*.snm
+*.spl
+*.synctex.gz
+*.toc
+*.vrb
+
+# Submission bundles and publisher templates: both are regenerated or re-downloaded.
+*.zip
