@@ -1,10 +1,12 @@
 %% Expert Systems with Applications submission, following Elsevier's
-%% elsarticle-template-harv.tex (elsarticle.zip, v3.4) with name-year references.
-%% elsarticle.cls and elsarticle-harv.bst from that bundle are kept in this folder.
+%% elsarticle templates (elsarticle.zip, v3.4), with numbered references in
+%% citation order (elsarticle-num-names). elsarticle.cls and the .bst files from
+%% that bundle are kept in this folder.
 %%
-%% doubleblind hides the authors and affiliations in the PDF for anonymized
-%% review; remove it for the final version.
-\documentclass[preprint,12pt,authoryear,doubleblind]{elsarticle}
+%% The journal uses single-anonymized review, so authors are shown. For a
+%% double-anonymized venue, add the doubleblind class option, as below.
+% \documentclass[preprint,12pt,authoryear,doubleblind]{elsarticle}
+% \documentclass[final,12pt,authoryear,doubleblind]{elsarticle}
 
 %% Use the option review to obtain double line spacing
 %% \documentclass[authoryear,preprint,review,12pt]{elsarticle}
@@ -14,9 +16,10 @@
 %% \documentclass[final,1p,times,authoryear]{elsarticle}
 %% \documentclass[final,3p,times,twocolumn,authoryear]{elsarticle}
 %% \documentclass[final,5p,times,twocolumn,authoryear]{elsarticle}
-
+%% review: double line spacing; number, sort&compress: numbered citations [1-3].
+\documentclass[review,number,sort&compress]{elsarticle}
 %% The lineno package adds line numbers; uncomment it and \linenumbers below.
-%% \usepackage{lineno}
+\usepackage{lineno}
 
 % Core mathematics and typography
 \usepackage{amsmath,amssymb,amsfonts}
@@ -64,10 +67,9 @@
 
 \title{Repairing the Teacher for Knowledge Distillation via Causally Screened Channel Edits}
 
-%% Authors and affiliations are hidden in the PDF by the doubleblind option.
-%% For the final version, mark the corresponding author with \corref{cor1},
-%% add \cortext[cor1]{Corresponding author.} and \ead{email address}.
-\author{Muhammad Syafiq Mohd Pozi}
+\author{Muhammad Syafiq Mohd Pozi\corref{cor1}}
+\cortext[cor1]{Corresponding author.}
+%% \ead{email address}
 
 \affiliation{organization={School of Computing, Universiti Utara Malaysia},
             city={UUM Sintok},
@@ -125,7 +127,7 @@ Causal intervention \sep Class imbalance \sep Image classification
 \end{frontmatter}
 
 %% Uncomment to enable line numbers (with \usepackage{lineno} above).
-%% \linenumbers
+\linenumbers
 
 \section{Introduction}
 \label{sec:introduction}
@@ -2321,7 +2323,8 @@ RLD, lower weight & 5.20 & 9.00 & 7.52 \\
 \end{table}
 
 \textbf{Response terms.} The response term of classical KD is
-$\mathcal R=\tau^2D_{\mathrm{KL}}(p_T^{(\tau)}\|p_S^{(\tau)})$, and
+\[\mathcal R=\tau^2D_{\mathrm{KL}}(p_T^{(\tau)}\|p_S^{(\tau)}),\]
+and
 LoCa~\citep{yang2024loca} uses the same term with a calibrated teacher
 distribution. On an image where the teacher ranks another class above
 the ground truth $y$, every non-target probability is multiplied by
@@ -2430,7 +2433,7 @@ $\Delta\mathrm{Acc}$, $\Delta R_{\mathrm{tar}}$ & Change when the teacher is rep
 % The authors thank [name or funding source].
 
 % Add and edit references in ref.bib, then cite them with \citep{citationKey}.
-\bibliographystyle{elsarticle-harv}
+\bibliographystyle{elsarticle-num-names}
 \bibliography{ref}
 
 \end{document}
