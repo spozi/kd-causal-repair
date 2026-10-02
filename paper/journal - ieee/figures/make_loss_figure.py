@@ -6,7 +6,7 @@
     over its four imbalance factors, with datasets ordered by class count. Spearman's rho between
     class count and that change is computed over the 13 datasets.
 (c) LoCa's accuracy change from classical KD against the teacher's error on its own augmented
-    training images in its final training epoch, one point per setting, with Spearman rho. Larger
+    training images in its final training epoch, one point per setting, with Spearman's r_s. Larger
     filled diamonds give the mean change within error bands; open markers are used only in (a),
     for the lower-weight DKD and RLD.
 
@@ -207,7 +207,7 @@ def main():
         ys = [statistics.fmean(g for _e, g in b) for b in bands if b]
         ax_c.plot(xs, ys, color=colour, lw=0.9, zorder=3)
         ax_c.scatter(xs, ys, marker="D", s=24, facecolors=colour, edgecolors="0.1", linewidths=0.7, zorder=4)
-        ax_c.text(0.03, 0.97 - 0.075 * i, f"{teacher}: \u03c1 = {rho:+.2f}".replace("-", "\u2212"),
+        ax_c.text(0.03, 0.97 - 0.075 * i, f"{teacher}: $r_s$ = {rho:+.2f}".replace("-", "\u2212"),
                   transform=ax_c.transAxes, color=colour, fontsize=6, ha="left", va="top")
     ax_c.set_xscale("symlog", linthresh=0.1, linscale=0.6)
     ax_c.set_xticks([0, 0.1, 1, 10, 40])

@@ -1,0 +1,785 @@
+%% Supplementary material for the IEEE TPAMI submission (IEEEtran, compsoc).
+%% Build main.tex and this file twice each: they read each other's labels
+%% through the xr package.
+\documentclass[10pt,journal,compsoc]{IEEEtran}
+
+% Core mathematics and typography
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{amsthm}
+\usepackage{mathtools}
+\usepackage{graphicx}
+% Font expansion and protrusion keep justified lines from opening wide gaps.
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{placeins}
+% Labels of the main paper, for references such as Eq. (2).
+\usepackage{xr}
+\externaldocument[M-]{main}
+\usepackage{supertabular}
+% A table caption set in the text flow, in the style of IEEEtran's floating
+% tables, for a breakable supertabular that follows it.
+\makeatletter
+\newcommand{\flowtablecaption}[1]{\par\begingroup\@parboxrestore\normalsize
+  \def\@captype{table}\refstepcounter{table}%
+  \@makecaption{\fnum@table}{#1}\par\endgroup
+  \vspace{-5pt}}% the baseline skip before the table replaces part of the float gap
+\makeatother
+% IEEEtran's compsoc headings, with the same natural spacing but less stretch,
+% so that a short column spreads its spare space over paragraph breaks and
+% displays instead of opening wide gaps above headings.
+\makeatletter
+\def\section{\@startsection{section}{1}{\z@}{-3.5ex plus -0.5ex minus -1.5ex}%
+{0.7ex plus 0.2ex minus 0ex}{\normalfont\sublargesize\sffamily\bfseries\scshape}}
+\def\subsection{\@startsection{subsection}{2}{\z@}{-3.5ex plus -0.5ex minus -1.5ex}%
+{0.7ex plus 0.1ex minus 0ex}{\normalfont\normalsize\sffamily\bfseries}}
+\makeatother
+\usepackage{cite}
+\usepackage{xcolor}
+\usepackage{url}
+
+% Uncomment when algorithms are needed.
+% \usepackage{algorithm}
+% \usepackage{algorithmic}
+
+% Uncomment for hyperlinks in the review/preprint version.
+% \usepackage[hidelinks]{hyperref}
+
+% Common theorem environments
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+
+% Convenient notation
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\vect}[1]{\mathbf{#1}}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+% Number sections, tables and equations with an S prefix.
+\renewcommand{\thesection}{S\arabic{section}}
+\renewcommand{\thetable}{S\arabic{table}}
+\renewcommand{\thefigure}{S\arabic{figure}}
+\renewcommand{\theequation}{S\arabic{equation}}
+
+\begin{document}
+
+\title{Supplementary Material for ``Repairing the Teacher for Knowledge
+Distillation via Causally Screened Channel Edits''}
+
+\author{Anonymous Authors}
+
+\markboth{IEEE Transactions on Pattern Analysis and Machine Intelligence,~Vol.~XX, No.~XX, September~2026}%
+{Anonymous Authors: Supplementary Material}
+
+\maketitle
+
+This supplement gives the experimental settings and further results
+of the paper. Its sections, tables and equations carry the prefix
+S; other numbers refer to the main paper.
+
+\raggedbottom
+\section{Datasets}
+\label{app:datasets}
+
+Table~\ref{tab:datasets} gives the sizes and splits of the thirteen
+datasets, and Table~\ref{tab:dataset-classes} the classes of the ten
+with at most eleven classes.
+We obtained each dataset from its official distribution and checked
+every downloaded archive against a fixed checksum.
+
+\begin{table*}[!t]
+\centering
+\caption{Dataset characteristics and split sizes in our experiments.
+Counts are numbers of images. The nominal imbalance factor $\rho$
+controls class subsampling in the training and validation splits;
+at $\rho=1$, no images are removed. Lastly, the test split is never resampled.}
+\label{tab:datasets}
+\footnotesize
+\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{@{}llrlrrrrrrl@{}}
+\toprule
+& & & & \multicolumn{3}{c}{$\rho=1$} & \multicolumn{3}{c}{$|\mathcal{D}_{\mathrm{tr}}|$ at} & \\
+\cmidrule(lr){5-7}\cmidrule(lr){8-10}
+Dataset & Domain & $C$ & Native size & $|\mathcal{D}_{\mathrm{tr}}|$ & $|\mathcal{D}_{\mathrm{val}}|$ & $|\mathcal{D}_{\mathrm{test}}|$ & $\rho=10$ & $\rho=50$ & $\rho=100$ & Validation split \\
+\midrule
+CIFAR-10      & Natural        & 10  & $32\times32$              & 45{,}000 & 5{,}000  & 10{,}000 & 18{,}391 & 12{,}601 & 11{,}167 & 10\% of train \\
+CIFAR-100     & Natural        & 100 & $32\times32$              & 45{,}000 & 5{,}000  & 10{,}000 & 17{,}659 & 11{,}384 & 9{,}806  & 10\% of train \\
+CINIC-10      & Natural        & 10  & $32\times32$              & 90{,}000 & 90{,}000 & 90{,}000 & 36{,}780 & 25{,}199 & 22{,}335 & Official \\
+STL-10        & Natural        & 10  & $96\times96$              & 4{,}500  & 500      & 8{,}000  & 1{,}839  & 1{,}259  & 1{,}118  & 10\% of train \\
+Caltech-101   & Natural        & 101 & Variable                  & 6{,}073  & 868      & 1{,}736  & 3{,}292  & 2{,}606  & 2{,}426  & 70/10/20 split \\
+\midrule
+SVHN          & House numbers  & 10  & $32\times32$              & 65{,}931 & 7{,}326  & 26{,}032 & 30{,}463 & 21{,}329 & 18{,}847 & 10\% of train \\
+Fashion-MNIST & Clothing       & 10  & $28\times28$, grayscale   & 54{,}000 & 6{,}000  & 10{,}000 & 22{,}069 & 15{,}120 & 13{,}401 & 10\% of train \\
+GTSRB         & Traffic signs  & 43  & Variable                  & 23{,}976 & 2{,}664  & 12{,}630 & 12{,}070 & 8{,}721  & 7{,}770  & 10\% of train \\
+EuroSAT       & Satellite      & 10  & $64\times64$              & 21{,}600 & 2{,}700  & 2{,}700  & 9{,}118  & 6{,}408  & 5{,}732  & 80/10/10 split \\
+\midrule
+PathMNIST     & Colon pathology & 9  & $28\times28$              & 89{,}996 & 10{,}004 & 7{,}180  & 36{,}074 & 24{,}664 & 21{,}870 & Official \\
+BloodMNIST    & Blood cells    & 8   & $28\times28$              & 11{,}959 & 1{,}712  & 3{,}421  & 4{,}647  & 3{,}099  & 2{,}714  & Official \\
+DermaMNIST    & Dermatoscopy   & 7   & $28\times28$              & 7{,}007  & 1{,}003  & 2{,}005  & 1{,}722  & 874      & 707      & Official \\
+OrganAMNIST   & Abdominal CT   & 11  & $28\times28$, grayscale   & 34{,}561 & 6{,}491  & 17{,}778 & 11{,}131 & 6{,}517  & 5{,}481  & Official \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{table}[t]
+\caption{Classes of the ten datasets with at most eleven classes, in
+label order. Bold classes are target classes at every $\rho>1$.}
+\label{tab:dataset-classes}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2cm}%
+>{\raggedright\arraybackslash}p{0.73\columnwidth}@{}}
+\toprule
+Dataset & Classes, from label 0 \\
+\midrule
+CIFAR-10, CINIC-10 & airplane, automobile, bird, cat, deer,
+\textbf{dog, frog, horse, ship, truck} \\
+STL-10 & airplane, bird, car, cat, deer,
+\textbf{dog, horse, monkey, ship, truck} \\
+SVHN & 0, 1, 2, 3, 4, \textbf{5, 6, 7, 8, 9} \\
+Fashion-MNIST & T-shirt/top, trouser, pullover, dress, coat,
+\textbf{sandal, shirt, sneaker, bag, ankle boot} \\
+EuroSAT & annual crop, forest, herbaceous vegetation, highway,
+industrial, \textbf{pasture, permanent crop, residential, river,
+sea/lake} \\
+PathMNIST & adipose, background, debris, lymphocytes, \textbf{mucus,
+smooth muscle, normal colon mucosa, cancer-associated stroma,
+colorectal adenocarcinoma epithelium} \\
+BloodMNIST & basophil, eosinophil, erythroblast, immature granulocyte,
+\textbf{lymphocyte, monocyte, neutrophil, platelet} \\
+DermaMNIST & actinic keratosis and intraepithelial carcinoma$^{a}$,
+basal cell carcinoma, benign keratosis-like lesion,
+\textbf{dermatofibroma, melanoma}, melanocytic nevus$^{b}$,
+\textbf{vascular lesion} \\
+OrganAMNIST & bladder, left femur, right femur$^{a}$, \textbf{heart},
+left kidney, right kidney$^{b}$, liver, \textbf{left lung, right lung,
+pancreas, spleen} \\
+\bottomrule
+\multicolumn{2}{@{}l}{$^{a}$Target only at $\rho=10$.\quad
+$^{b}$Target only at $\rho=50$ and $\rho=100$.} \\
+\end{tabular}
+\end{table}
+
+\textbf{Natural images.} CIFAR-10 and
+CIFAR-100~\cite{krizhevsky2009learning} each contain 60{,}000 color
+images of $32\times32$ pixels in 10 and 100 classes, with 50{,}000
+training and 10{,}000 test images. CINIC-10~\cite{darlow2018cinic} combines
+CIFAR-10 with downsampled ImageNet images of the same ten classes,
+giving 270{,}000 images split equally into training, validation and
+test sets. STL-10~\cite{coates2011analysis} has $96\times96$ images of
+ten classes taken from ImageNet, with 500 labelled training and 800
+test images per class; we do not use its 100{,}000 unlabelled images.
+Caltech-101~\cite{feifei2004learning} contains photographs of objects in
+101 categories at varying resolutions. Most categories hold about 50
+images and the largest about 800, and
+we exclude its background category.
+
+\textbf{Other visual domains.} SVHN~\cite{netzer2011reading} contains
+$32\times32$ crops of house-number digits from Google Street View
+images, with 73{,}257 training and 26{,}032 test images; we do not use
+its 531{,}131 additional training images.
+Fashion-MNIST~\cite{xiao2017fashion} has 70{,}000 grayscale
+$28\times28$ images of Zalando clothing articles in ten classes, split
+into 60{,}000 training and 10{,}000 test images.
+GTSRB~\cite{stallkamp2012man} contains photographs of German traffic
+signs in 43 classes, from 15 to 250 pixels on a side; we use its
+26{,}640-image training archive and 12{,}630-image test set.
+EuroSAT~\cite{helber2019eurosat} has 27{,}000 Sentinel-2
+patches of $64\times64$ pixels in ten land-use and land-cover classes,
+of which we use the RGB version.
+
+\textbf{Medical images.} The four medical datasets come from
+MedMNIST~v2~\cite{yang2023medmnist}, which standardizes public medical
+collections as $28\times28$ images with official training, validation
+and test splits. PathMNIST holds patches of colorectal cancer histology
+in nine tissue types, and BloodMNIST microscope images of individual
+normal blood cells in eight types. DermaMNIST holds dermatoscopic images
+of pigmented skin lesions in seven diagnostic categories, derived from
+HAM10000, and OrganAMNIST axial slices of abdominal computed tomography
+in eleven organ classes.
+
+\textbf{Training split.} Each dataset has disjoint training, validation
+and test sets, denoted $\mathcal{D}_{\mathrm{tr}}$,
+$\mathcal{D}_{\mathrm{val}}$ and $\mathcal{D}_{\mathrm{test}}$.
+Every teacher and student is trained on $\mathcal{D}_{\mathrm{tr}}$.
+This set also provides the repair pool,
+$\mathcal{D}_{\mathrm{rep}}=\mathcal{D}_{\mathrm{tr}}$, from which the
+hard and preservation sets are drawn. For GTSRB~\cite{stallkamp2012man},
+we use the 26{,}640-image competition training
+archive.
+For STL-10, we use the 5{,}000 labelled training images, and for SVHN we
+do not use its extra training set.
+
+\textbf{Validation split.} We use $\mathcal{D}_{\mathrm{val}}$ to select
+checkpoints and repair candidates. CINIC-10 and the four MedMNIST
+datasets provide official validation sets. For CIFAR-10, CIFAR-100,
+STL-10, SVHN, Fashion-MNIST and GTSRB, we hold out a stratified 10\% of
+the official training images. Caltech-101 and EuroSAT have no fixed
+test partition, so we define stratified training, validation and test
+splits for this study. Caltech-101 has 101 categories, most with about
+50 images~\cite{feifei2004learning}; we assign 70/10/20 so that
+its test set includes more images per class. EuroSAT has 27{,}000
+images in 10 classes, and its original evaluation used 80\% for
+training~\cite{helber2019eurosat}. We retain that training fraction
+and divide the remaining 20\% equally between validation and test,
+giving 80/10/10 and a 2{,}700-image test set. Within each dataset and
+imbalance setting, every model uses the same resulting splits.
+
+\textbf{Test split.} We keep $\mathcal{D}_{\mathrm{test}}$ sealed until
+the teacher and every student checkpoint of a run have been fixed.
+Official test sets are used unchanged, including the 12{,}630 GTSRB
+and 8{,}000 STL-10 images. Caltech-101 and EuroSAT use
+the partitions above. Test images are never resampled.
+
+\textbf{Imbalance profiles.} Eq.~\eqref{M-eq:imbalance-profile} of the
+main paper sets the imposed decay through $\rho$, but the ratio between
+the largest and smallest class counts also depends on the native counts
+and rounding. At $\rho=1$ no image is removed, so a dataset keeps its
+native imbalance: DermaMNIST, for example, has between 80 and 4{,}693
+training images per class. At $\rho=100$ the rarest training class holds
+as few as one image (Caltech-101 and DermaMNIST).
+
+\textbf{Preprocessing.} All images are used as $32\times32$ RGB tensors,
+with grayscale images replicated across three channels and normalized per
+channel with fixed constants: each dataset's own statistics for
+CIFAR-100, CINIC-10 and Fashion-MNIST, the ImageNet statistics for
+STL-10, Caltech-101, EuroSAT and GTSRB, and a mean and standard
+deviation of 0.5 for the rest. For CIFAR-10, CIFAR-100,
+CINIC-10 and SVHN, which are natively $32\times32$, and for Fashion-MNIST
+and the MedMNIST datasets, which are resized from $28\times28$, training
+images are randomly cropped to $32\times32$ after 4-pixel zero padding.
+For the variable- and higher-resolution datasets (STL-10, Caltech-101,
+EuroSAT and GTSRB), training uses a random resized crop to $32\times32$
+covering 85--100\% of the image with aspect ratio 0.9--1.1, and
+evaluation resizes the shorter side to 36 pixels and takes the central
+$32\times32$ crop. Random horizontal flips are applied only to CIFAR-10,
+CIFAR-100 and CINIC-10, where mirroring preserves the label; they are
+omitted for digits, traffic signs, medical images and the remaining
+datasets. Evaluation images are never augmented.
+
+\textbf{Classes and target classes.}
+Eq.~\eqref{M-eq:imbalance-profile} of the main paper thins classes in label order, so the
+order decides which classes become rare.
+Table~\ref{tab:dataset-classes} lists the classes of the ten datasets
+with at most eleven classes in that order and marks the target classes
+at $\rho>1$. When the native classes are of similar size, the target
+classes are the later half of the order. Where native sizes differ, a
+class that is small from the start can join the target set at some
+imbalance factors only, as the footnotes of
+Table~\ref{tab:dataset-classes} mark. For CIFAR-100, Caltech-101
+and GTSRB we keep the standard label order, alphabetical for the first
+two and by class number for GTSRB.
+Their target sets hold 50, 51 and 22 classes. For CIFAR-100 these are
+always the last 50 labels, whereas for Caltech-101 and GTSRB 45 to 47
+and 20 of them lie in the later half of the order.
+
+\section{Models and Training Settings}
+\label{supp:training}
+
+\textbf{Model architectures.} The design uses three teachers, CNN-T,
+ResNet-18 and ResNet-34, and one student, CNN-S;
+Table~\ref{tab:architectures} lists their structure, size and
+compute. All four take $32\times32$ RGB inputs. CNN-T and CNN-S share
+one design. Each has three stages, and each stage applies two
+$3\times3$ convolutions, each followed by batch normalization and
+ReLU, and ends with a $2\times2$ max pool that halves the spatial
+resolution. The final feature map is average-pooled to $2\times2$ and
+passed to a linear classifier. CNN-S halves CNN-T's width at every
+stage. ResNet-18 and ResNet-34~\cite{he2016deep} stack basic residual
+blocks, each with two $3\times3$ convolutions, batch normalization and
+a shortcut connection, in four stages; the first block of each stage
+after the first halves the spatial resolution. Both ResNets use a
+$3\times3$, stride-one stem without initial max pooling, which keeps
+the full $32\times32$ resolution in the first stage, and end with
+global average pooling and a linear classifier. They share their
+stage widths and differ only in depth. Stage widths in the table give
+the output channels in order; stage depth means convolutions per stage
+for the CNNs and residual blocks per stage for the ResNets. For each
+teacher, the table also gives the number of channels that the repair
+searches: the output channels of its last two stages.
+
+\begin{table}[!t]
+\caption{Teacher and student architectures. Parameters and FLOPs are
+for a ten-class head and one $32\times32$ image, counting two FLOPs per
+multiply--accumulate in convolution and linear layers.}
+\label{tab:architectures}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{3}{c}{Teachers} & Student \\
+\cmidrule(lr){2-4}\cmidrule(l){5-5}
+& CNN-T & ResNet-18 & ResNet-34 & CNN-S \\
+\midrule
+Stage widths & $(32,64,128)$ & \multicolumn{2}{c}{$(64,128,256,512)$}
+& $(16,32,64)$ \\
+Stage depth & $2$ & $(2,2,2,2)$ & $(3,4,6,3)$ & $2$ \\
+Params (M) & 0.29 & 11.2 & 21.3 & 0.075 \\
+FLOPs (M) & 77 & 1{,}111 & 2{,}319 & 20 \\
+\multicolumn{5}{@{}l}{\textit{Ratio to CNN-S}} \\
+\quad Params & $3.9\times$ & $149\times$ & $284\times$ & $1\times$ \\
+\quad FLOPs & $3.9\times$ & $56\times$ & $117\times$ & $1\times$ \\
+Searched channels & 192 & 768 & 768 & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Training settings.} Table~\ref{tab:training-parameters}
+summarizes the optimization and distillation parameters. A separate
+teacher is trained from scratch for each dataset--profile and
+teacher-architecture setting, and CNN-S is trained with the same recipe
+whichever teacher it learns from.
+
+\begin{table*}[!t]
+\caption{Training and distillation settings. Alternative KD losses use
+the original teacher.}
+\label{tab:training-parameters}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabular}{@{}L{0.27\textwidth}L{0.67\textwidth}@{}}
+\toprule
+Parameter & Setting \\
+\midrule
+Teacher training & Cross-entropy from a fresh initialization \\
+Optimizer & SGD; batch size 128; initial learning rate 0.05; momentum 0.9; weight decay $5\times10^{-4}$ \\
+Epochs by imbalance factor & $(81,49,71,81)$ for $\rho=(1,10,50,100)$; cosine decay \\
+Checkpoint selection & Highest validation accuracy for teacher and student training \\
+Student initializations & Three per condition, paired across teacher conditions and KD losses \\
+\midrule
+Classical KD & Frozen original or repaired teacher; $\tau=4$; cross-entropy and response-KL weights 0.5 each; five-epoch response warm-up; no feature loss \\
+LoCa & Cross-entropy and response weights 0.5 each; calibration coefficient 0.95 \\
+DKD and RLD & Cross-entropy weight 1; response weight 1; internal component weights 1 and 8 \\
+DKD and RLD, lower response & Cross-entropy weight 1; internal component weights 1 and 8; response weight set per teacher from training histories (see text), DKD/RLD: 0.15/0.20 with CNN-T, 0.298/0.516 with ResNet-18, and 0.290/0.539 with ResNet-34 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+We ran all experiments on 16~GB NVIDIA GeForce RTX 5060 Ti
+GPUs, using bfloat16 mixed precision with PyTorch~2.14 and
+CUDA~13.2. All training used the same GPU model and precision, which
+supported every teacher and the student at the batch sizes listed in
+Table~\ref{tab:training-parameters}.
+
+\section{Teacher Repair Settings}
+\label{supp:repair}
+
+\textbf{Teacher repair.} Table~\ref{tab:repair-parameters} gives the
+values used for the parameters introduced in Section~\ref{M-sec:repair} of the main paper.
+Localization examines the last two convolutional stages of the
+teacher. For sparse classes, the companion and preservation pools use
+the fallback rules described in Section~\ref{M-sec:repair}; the table
+reports the requested companion count and preservation cap. Candidates
+are selected on the validation set as in Step 6, with a selection
+guardrail of $\eta_{\mathrm{sel}}=0.005$. If no candidate passes, the
+original teacher is retained as the no-change outcome, and the
+original-teacher student is reused rather than retrained.
+
+\begin{table}[!t]
+\caption{Parameters used for teacher localization and repair.}
+\label{tab:repair-parameters}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabular}{@{}L{0.39\columnwidth}L{0.53\columnwidth}@{}}
+\toprule
+Component & Setting \\
+\midrule
+Hard set and companions & $\xi=0.20$; $n_{\mathrm{comp}}=5$ \\
+Stable channel screen & $B_{\mathrm{boot}}=20$; $\kappa=0.25$; $\pi_{\min}=0.70$ \\
+Causal preservation set & Equal count per usable class, capped at 64 \\
+Causal guardrail & $\eta_{\mathrm{acc}}=0.005$ \\
+Selection guardrail & $\eta_{\mathrm{sel}}=0.005$ \\
+Candidate grid & $n_{\mathrm{edit}}\in\{2,4,8\}$ for every teacher; $\{8,16,32\}$ for the scaled ResNet grid; learning rates 0.001 and 0.005 \\
+Repair optimization & 20 epochs; 640 draws per stream per epoch; batch size 64 per stream; SGD momentum 0.9, zero weight decay and cosine schedule \\
+Preservation objective & $\tau_{\mathrm r}=4$; $\lambda_{\mathrm P}=1$; $\lambda_{\mathrm F}=0.25$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Evaluation Metrics}
+\label{supp:metrics}
+
+This section defines the metrics of Section~\ref{M-sec:evaluation-metrics}
+of the main paper on the test set
+$\mathcal{D}_{\mathrm{test}}=\{(x_i,y_i)\}_{i=1}^{N}$, where $x_i$ is
+an image and $y_i$ its class label. For a model $M$, let
+$\widehat y_i(M)=\argmax_c p_{M,c}^{(1)}(x_i)$ be its predicted label.
+The $(a,b)$ entry of its confusion matrix is
+\begin{equation}
+\label{eq:confusion-entry}
+Q_{ab}(M)=\sum_{i=1}^{N}
+\mathbf{1}[y_i=a]\cdot\mathbf{1}[\widehat y_i(M)=b].
+\end{equation}
+Thus, $Q_{cc}(M)$ counts the class-$c$ images predicted correctly,
+whereas an off-diagonal entry $Q_{ab}(M)$ counts class-$a$ images
+mistaken for class $b$. We compute accuracy, precision
+and recall from these counts. Overall accuracy is
+\begin{equation}
+\label{eq:overall-accuracy}
+\operatorname{Acc}(M)=\frac{1}{N}\sum_{c=0}^{C-1}Q_{cc}(M).
+\end{equation}
+For class $c$, precision and recall are respectively
+\begin{equation}
+\label{eq:class-precision}
+P_c(M)=\frac{Q_{cc}(M)}{\sum_a Q_{ac}(M)},
+\end{equation}
+and
+\begin{equation}
+\label{eq:class-recall}
+R_c(M)=\frac{Q_{cc}(M)}{\sum_b Q_{cb}(M)}.
+\end{equation}
+If a class receives no predictions, its precision is set to zero.
+We average class F1 scores to obtain
+\begin{equation}
+\label{eq:macro-f1}
+F_{1,\mathrm{macro}}(M)=\frac{1}{C}
+\sum_{c=0}^{C-1}\frac{2P_c(M)R_c(M)}{P_c(M)+R_c(M)},
+\end{equation}
+where a class with zero precision and recall contributes zero.
+
+The primary class-sensitive measure, target-class recall
+$R_{\mathrm{tar}}$, averages $R_c$ over $\mathcal C_{\mathrm{tar}}$
+(Eq.~\eqref{M-eq:target-recall} of the main paper).
+
+We also examine the predicted probabilities. Let
+$p_{i,c}=p_{M,c}^{(1)}(x_i)$ denote the probability that model $M$
+assigns to class $c$ for image $x_i$, and let
+$N_c=\sum_{i=1}^{N}\mathbf{1}[y_i=c]$ be the number of test images
+whose true label is $c$. Overall negative log-likelihood (NLL), Brier
+score, and target-balanced NLL are defined separately. Overall NLL is
+\begin{equation}
+\label{eq:overall-nll}
+\operatorname{NLL}(M)
+=-\frac{1}{N}\sum_{i=1}^{N}\log p_{i,y_i}.
+\end{equation}
+The multiclass Brier score is
+\begin{equation}
+\label{eq:brier-score}
+\operatorname{Brier}(M)
+=\frac{1}{N}\sum_{i=1}^{N}\sum_{c=0}^{C-1}
+\bigl(p_{i,c}-\mathbf{1}[y_i=c]\bigr)^2.
+\end{equation}
+Finally, target-balanced NLL is
+\begin{equation}
+\label{eq:target-balanced-nll}
+\operatorname{NLL}_{\mathrm{tar}}(M)
+=-\frac{1}{|\mathcal C_{\mathrm{tar}}|}
+\sum_{c\in\mathcal C_{\mathrm{tar}}}
+\frac{1}{N_c}\sum_{i:y_i=c}\log p_{i,c}.
+\end{equation}
+The last measure weights target classes equally and breaks ties in
+validation-based repair selection. Smaller values are better for all
+three measures. To assess confidence calibration, we place each
+prediction's maximum probability in one of 15 equal-width bins. If
+$n_b$, $a_b$ and $q_b$ are the count, accuracy and mean confidence of
+bin $b$, respectively, then
+\begin{equation}
+\label{eq:ece-metric}
+\operatorname{ECE}_{15}(M)=\sum_{b=1}^{15}
+\frac{n_b}{N}|a_b-q_b|,
+\end{equation}
+with empty bins contributing zero. We also assess whether confidence
+identifies correct predictions. Order the $N$
+images by decreasing maximum probability, write their correctness
+indicators as $u_{(1)},\ldots,u_{(N)}$, and compute the area under the
+risk--coverage curve (AURC) as
+\begin{equation}
+\label{eq:aurc-metric}
+\operatorname{AURC}(M)=\frac{1}{N}\sum_{k=1}^{N}
+\left(1-\frac{1}{k}\sum_{j=1}^{k}u_{(j)}\right).
+\end{equation}
+Tied confidence values are averaged over their possible orders.
+Selective accuracy at 80\% or 90\% coverage is the accuracy among the
+most confident $\lceil 0.8N\rceil$ or $\lceil 0.9N\rceil$ predictions.
+Lower ECE and AURC indicate better calibration and selective
+performance, respectively.
+
+\section{Alternative-Loss Settings}
+\label{app:loss-settings}
+
+Here we state the alternative losses as implemented and how the lower
+weights of DKD and RLD were set. Every loss, classical KD included,
+trains the student with
+\begin{equation}
+\label{eq:alternative-student-loss}
+\mathcal L=\lambda_{\mathrm{CE}}\,
+\mathcal L_{\mathrm{CE}}\!\left(y,p_S^{(1)}(x)\right)
++w_e\lambda_{\mathrm R}\,\mathcal R(x,y),
+\end{equation}
+where $\mathcal R$ is the method's response term and $w_e$ is the
+warm-up factor of Eq.~\eqref{M-eq:experimental-kd-loss} in the main paper. All four losses
+use $\tau=4$ and no feature term. Classical KD and LoCa set
+$\lambda_{\mathrm R}=0.5$ and $\lambda_{\mathrm{CE}}=1-\lambda_{\mathrm R}$,
+as in the main paper, whereas DKD and RLD keep
+$\lambda_{\mathrm{CE}}=1$ and use either the published
+$\lambda_{\mathrm R}=1$ or the lower weight described below.
+
+\begin{table}[t]
+\caption{Response weights of DKD and RLD, and the median ratio of the
+weighted response term to the weighted cross-entropy over all 52
+settings.}
+\label{tab:loss-weights}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+& CNN-T & ResNet-18 & ResNet-34 \\
+\midrule
+\multicolumn{4}{@{}l}{\textit{Lower response weight $\lambda_{\mathrm R}$}} \\
+DKD & 0.15 & 0.298 & 0.290 \\
+RLD & 0.20 & 0.516 & 0.539 \\
+\midrule
+\multicolumn{4}{@{}l}{\textit{Median ratio of response term to cross-entropy}} \\
+Classical KD & 4.71 & 8.06 & 7.07 \\
+LoCa & 4.82 & 8.03 & 7.10 \\
+DKD, published weight & 27.85 & 27.02 & 24.35 \\
+DKD, lower weight & 5.25 & 9.72 & 8.20 \\
+RLD, published weight & 22.07 & 15.61 & 13.12 \\
+RLD, lower weight & 5.20 & 9.00 & 7.52 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Response terms.} The response term of classical KD is
+$\mathcal R=\tau^2D_{\mathrm{KL}}(p_T^{(\tau)}\|p_S^{(\tau)})$, and
+LoCa~\cite{yang2024loca} uses the same term with a calibrated teacher
+distribution. On an image where the teacher ranks another class above
+the ground truth $y$, every non-target probability is multiplied by
+$0.95/(1-p_{T,y}^{(\tau)}+\max_c p_{T,c}^{(\tau)})$ and $y$ receives
+the remaining mass, which makes it the most probable class; on the
+other images the teacher's distribution is unchanged.
+DKD~\cite{zhao2022decoupled} uses $\mathcal R=\tau^2\mathcal
+L_{\mathrm{DKD}}$ from Eq.~\eqref{M-eq:dkd-loss} of the main paper, with
+$\lambda_{\mathrm{TC}}=1$ and $\lambda_{\mathrm{NC}}=8$.
+RLD~\cite{sun2025knowledge} also has two terms, weighted 1 and 8. The
+first matches the student's binary distribution for $y$ to the
+teacher's binary distribution for its own top class, at temperature 1.
+The second applies $\tau^2D_{\mathrm{KL}}$ at temperature $\tau$ over
+only the classes that the teacher ranks below $y$. On an image that the
+teacher classifies correctly, the two terms therefore reduce to DKD's
+target and non-target terms, apart from the temperature of the first.
+
+\textbf{Lower response weight.} The lower weight rescales
+$\lambda_{\mathrm R}$ so that the response term relates to the
+cross-entropy as it does in classical KD. For each run, we take the
+ratio $\lambda_{\mathrm R}\mathcal R/(\lambda_{\mathrm{CE}}\mathcal
+L_{\mathrm{CE}})$ of the two terms' epoch means, find its median over
+the epochs after the warm-up, and then take the median over runs. The
+lower weight is classical KD's median divided by the method's median at
+$\lambda_{\mathrm R}=1$, so it depends on training histories alone. For
+the ResNet teachers we computed it over all 52 settings. For CNN-T we
+fixed it earlier, on its 23 repaired settings, where the medians were
+4.42 for classical KD, 29.02 for DKD and 21.59 for RLD. This gave 0.152
+and 0.205, which we rounded to 0.15 and 0.20.
+Table~\ref{tab:loss-weights} gives the weights and the medians over all
+52 settings. At the lower weights, the DKD and RLD ratios came to 1.06
+to 1.21 times that of classical KD, against 1.9 to 5.9 times at the
+published weights. LoCa kept the balance of classical KD, since it
+changes only the teacher's targets.
+
+\section{Dataset-Level Student Performance\\by Teacher}
+\label{app:dataset-student-outcomes}
+
+Table~\ref{tab:dataset-student-outcomes} counts how often each repaired
+teacher improved, left unchanged, or decreased its CNN-S student's
+test performance relative to the matched original-teacher condition,
+under both channel budgets.
+Each dataset contributes one result per imbalance factor. Counts use the sign of the student difference averaged over
+three matched initializations. A zero difference includes settings in
+which no teacher repair was selected and the original student was
+reused.
+
+\begin{table}[t]
+\caption{CNN-S outcomes by dataset for each teacher and channel budget,
+counted as improved/unchanged/decreased settings over the four
+imbalance factors.}
+\label{tab:dataset-student-outcomes}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.05}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+& CNN-T & \multicolumn{2}{c}{ResNet-18} & \multicolumn{2}{c}{ResNet-34} \\
+\cmidrule(lr){2-2}\cmidrule(lr){3-4}\cmidrule(l){5-6}
+Dataset & 2/4/8 & 2/4/8 & 8/16/32 & 2/4/8 & 8/16/32 \\
+\midrule
+\multicolumn{6}{@{}l}{\textit{Test accuracy}} \\
+CIFAR-10 & 2/1/1 & 1/1/2 & 2/1/1 & 3/1/0 & 3/1/0 \\
+CIFAR-100 & 0/4/0 & 2/1/1 & 2/2/0 & 2/1/1 & 0/3/1 \\
+CINIC-10 & 2/2/0 & 3/0/1 & 2/1/1 & 3/0/1 & 4/0/0 \\
+STL-10 & 1/3/0 & 0/4/0 & 0/4/0 & 1/3/0 & 1/3/0 \\
+Caltech-101 & 1/3/0 & 0/3/1 & 0/3/1 & 0/4/0 & 0/4/0 \\
+SVHN & 2/2/0 & 0/3/1 & 0/3/1 & 0/3/1 & 0/3/1 \\
+Fashion-MNIST & 3/1/0 & 1/3/0 & 1/3/0 & 3/1/0 & 2/2/0 \\
+GTSRB & 0/4/0 & 0/4/0 & 1/3/0 & 0/4/0 & 0/3/1 \\
+EuroSAT & 1/2/1 & 1/3/0 & 1/3/0 & 2/2/0 & 2/2/0 \\
+PathMNIST & 2/1/1 & 0/4/0 & 0/4/0 & 0/2/2 & 1/2/1 \\
+BloodMNIST & 3/1/0 & 1/3/0 & 1/3/0 & 0/3/1 & 0/4/0 \\
+DermaMNIST & 1/2/1 & 2/1/1 & 1/1/2 & 0/4/0 & 0/4/0 \\
+OrganAMNIST & 1/3/0 & 0/4/0 & 0/4/0 & 1/3/0 & 0/3/1 \\
+\midrule
+All 52 settings & 19/29/4 & 11/34/7 & 11/35/6 & 15/31/6 & 13/34/5 \\
+\midrule
+\multicolumn{6}{@{}l}{\textit{Target-class macro recall}} \\
+CIFAR-10 & 2/1/1 & 0/1/3 & 1/1/2 & 3/1/0 & 3/1/0 \\
+CIFAR-100 & 0/4/0 & 3/1/0 & 2/2/0 & 2/1/1 & 0/3/1 \\
+CINIC-10 & 2/2/0 & 3/0/1 & 2/1/1 & 2/0/2 & 3/0/1 \\
+STL-10 & 1/3/0 & 0/4/0 & 0/4/0 & 1/3/0 & 1/3/0 \\
+Caltech-101 & 1/3/0 & 0/3/1 & 1/3/0 & 0/4/0 & 0/4/0 \\
+SVHN & 2/2/0 & 0/3/1 & 0/3/1 & 0/3/1 & 0/3/1 \\
+Fashion-MNIST & 3/1/0 & 1/3/0 & 1/3/0 & 3/1/0 & 2/2/0 \\
+GTSRB & 0/4/0 & 0/4/0 & 1/3/0 & 0/4/0 & 0/3/1 \\
+EuroSAT & 2/2/0 & 1/3/0 & 1/3/0 & 2/2/0 & 2/2/0 \\
+PathMNIST & 2/1/1 & 0/4/0 & 0/4/0 & 0/2/2 & 1/2/1 \\
+BloodMNIST & 3/1/0 & 1/3/0 & 1/3/0 & 0/3/1 & 0/4/0 \\
+DermaMNIST & 1/2/1 & 3/1/0 & 2/1/1 & 0/4/0 & 0/4/0 \\
+OrganAMNIST & 1/3/0 & 0/4/0 & 0/4/0 & 1/3/0 & 1/3/0 \\
+\midrule
+All 52 settings & 20/29/3 & 12/34/6 & 12/35/5 & 14/31/7 & 13/34/5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Under the fixed budget, the accuracy counts are 19/29/4 for CNN-T,
+11/34/7 for ResNet-18 and 15/31/6 for ResNet-34, and the target-recall
+counts are 20/29/3, 12/34/6 and 14/31/7. Under the scaled budget, the
+two ResNet teachers reach 11/35/6 and 13/34/5 in accuracy and 12/35/5
+and 13/34/5 in target recall, close to their fixed-budget counts.
+
+\section{Additional Metrics of the\\Selected Repairs}
+\label{supp:secondary-results}
+
+Table~\ref{tab:secondary-results} gives the mean changes in the
+additional metrics of Section~\ref{supp:metrics} over each teacher's
+selected repairs. Student differences are averaged first over the three
+matched initializations and then across settings. Lower NLL, Brier
+score, ECE and AURC indicate better performance, as do higher F1 and
+selective accuracy. For every teacher, the mean changes favored both
+the repaired teacher and its students in all eight metrics. The
+improvements were smaller for the ResNet teachers, in line with their
+lower recall gains, although individual settings can differ from the
+mean.
+
+\begin{table}[!t]
+\caption{Mean repaired-minus-original changes in the additional
+metrics over each teacher's selected repairs (23, 18 and 21
+settings), with CNN-S as the student. F1, ECE and selective accuracy
+are in pp, and the other rows use their native scales.}
+\label{tab:secondary-results}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Metric & CNN-T & ResNet-18 & ResNet-34 \\
+\midrule
+\multicolumn{4}{@{}l}{\textit{Teacher}} \\
+Macro F1 (pp) & $+1.06$ & $+0.62$ & $+0.29$ \\
+Target-balanced NLL & $-0.155$ & $-0.119$ & $-0.055$ \\
+Overall NLL & $-0.057$ & $-0.026$ & $-0.023$ \\
+Brier score & $-0.016$ & $-0.007$ & $-0.005$ \\
+ECE$_{15}$ (pp) & $-1.07$ & $-0.56$ & $-0.28$ \\
+AURC & $-0.0055$ & $-0.0027$ & $-0.0016$ \\
+Selective accuracy, 80\% (pp) & $+0.87$ & $+0.31$ & $+0.24$ \\
+Selective accuracy, 90\% (pp) & $+0.91$ & $+0.36$ & $+0.29$ \\
+\midrule
+\multicolumn{4}{@{}l}{\textit{Student}} \\
+Macro F1 (pp) & $+0.73$ & $+0.19$ & $+0.13$ \\
+Target-balanced NLL & $-0.115$ & $-0.065$ & $-0.034$ \\
+Overall NLL & $-0.040$ & $-0.005$ & $-0.009$ \\
+Brier score & $-0.011$ & $-0.003$ & $-0.001$ \\
+ECE$_{15}$ (pp) & $-0.77$ & $-0.26$ & $-0.13$ \\
+AURC & $-0.0032$ & $-0.0012$ & $-0.0003$ \\
+Selective accuracy, 80\% (pp) & $+0.50$ & $+0.17$ & $+0.05$ \\
+Selective accuracy, 90\% (pp) & $+0.51$ & $+0.20$ & $+0.08$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Notation}
+\label{app:notation}
+
+Table~\ref{tab:notation} lists the main symbols by where they are
+introduced.
+
+% A breakable table, so that it starts in the space after this section's
+% text and continues in the next column under a repeated head.
+\vspace{\intextsep}
+\flowtablecaption{Main symbols.\label{tab:notation}}
+{\footnotesize
+\renewcommand{\arraystretch}{1.08}
+\setlength{\tabcolsep}{3pt}
+\tablefirsthead{\toprule Symbol & Meaning \\ \midrule}
+\tablehead{\toprule Symbol & Meaning \\ \midrule}
+\tabletail{\bottomrule}
+\tablelasttail{\bottomrule}
+\centering
+\begin{supertabular}{@{}>{\raggedright\arraybackslash}p{0.30\columnwidth}%
+>{\raggedright\arraybackslash}p{0.66\columnwidth}@{}}
+% supertabular's row-height estimate is conservative; let the first part use
+% the rest of its column.
+\shrinkheight{-36pt}
+\multicolumn{2}{@{}l}{\textit{Distillation (Section~\ref{M-sec:introduction})}} \\
+$T$, $S$ & Teacher and student \\
+$z_M(x)$, $p_M^{(\tau)}(x)$ & Logits of model $M$ and its softmax at temperature $\tau$ \\
+$\mathcal Y$, $C$ & Set of class labels and its size \\
+$\mathcal L_{\mathrm{KD}}$, $\alpha$ & KD objective and its cross-entropy weight \\
+$\mathcal E(f)$, $\mathcal E_k(f)$ & Error rate of classifier $f$, overall and on class $k$ \\
+$\Phi_\tau(S,T)$ & Fidelity gap, the expected $D_{\mathrm{KL}}(p_T^{(\tau)}\|p_S^{(\tau)})$ \\
+$\gamma$, $\gamma_S$ & Teacher and student capacity \\
+$\mathcal Y_U$ & Undistillable classes, on which KD does worse than cross-entropy alone \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Repair (Section~\ref{M-sec:repair})}} \\
+$T_0=f_{\theta_0}$, $T_\theta$ & Original teacher and repair candidate, with $d_\theta$ parameters \\
+$\mathcal D_{\mathrm{rep}}$ & Repair pool of $N$ labelled images, the training set \\
+$\mathcal C_{\mathrm{tar}}$ & Target classes \\
+$e_i$ & Error margin: strongest competitor's logit minus the true class's \\
+$\mathcal H$, $H_c$, $\xi$ & Hard set, its class-$c$ indices and the hard-set fraction \\
+$\mathcal P$, $\mathcal P_{\mathrm{causal}}$ & Preservation pool and its class-balanced subset for causal screening \\
+$\mathcal N_i$, $n_{\mathrm{comp}}$ & Companion list of hard image $i$ and its length \\
+$\mathcal L_{\mathrm{loc}}$, $\mathcal A_{\mathrm{loc}}$, $a=(\ell,k)$ & Searched stages, their channels and one channel \\
+$A_\theta^{(\ell)}(x)$, $K_\ell$ & Feature map of stage $\ell$ and its number of channels \\
+$G_{i,\ell,k}$, $D_{i,\ell,k}$, $\overline s_a$ & Gradient sensitivity, activation difference and consensus score of a channel \\
+$B_{\mathrm{boot}}$, $\kappa$, $\pi_{\min}$ & Bootstrap resamples, retained fraction and minimum selection frequency \\
+$\mathcal A_{\mathrm{stable}}$ & Channels that pass the stability screen \\
+$T_0^{-a}$ & Original teacher with channel $a$ set to zero \\
+$m(T;x,y)$ & True-class margin, equal to $-e_i$ for $T_0$ \\
+$\eta_{\mathrm{acc}}$ & Causal guardrail, the largest accuracy drop allowed on $\mathcal P_{\mathrm{causal}}$ \\
+$n_{\mathrm{edit}}$ & Channel budget, the number of channels edited \\
+$\mathcal A_{\mathrm{edit}}$, $\Omega_{\mathrm{edit}}$ & Edited channels and their parameter coordinates \\
+$\mathcal L_{\mathrm{rep}}$, $d_{\mathrm F}$ & Repair objective and its feature distance \\
+$\tau_{\mathrm r}$, $\lambda_{\mathrm P}$, $\lambda_{\mathrm F}$ & Repair temperature and the weights of output and feature preservation \\
+$\eta_{\mathrm{sel}}$ & Selection guardrail, the largest drop in validation accuracy allowed for a selected candidate \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Experiments (Sections~\ref{M-sec:experimental-design} and~\ref{M-sec:results})}} \\
+$\mathcal D_{\mathrm{tr}}$, $\mathcal D_{\mathrm{val}}$, $\mathcal D_{\mathrm{test}}$ & Training, validation and test sets \\
+$\rho$ & Nominal imbalance factor \\
+$n_c$, $\widetilde n_c$ & Images kept in class $c$ and images available to it \\
+$w_e$ & Warm-up factor of the response term in epoch $e$ \\
+$\lambda_{\mathrm{CE}}$, $\lambda_{\mathrm R}$, $\mathcal R$ & Cross-entropy weight, response weight and response term (Section~\ref{app:loss-settings}) \\
+$R_c$, $R_{\mathrm{tar}}$ & Recall of class $c$ and mean recall over $\mathcal C_{\mathrm{tar}}$ \\
+$\Delta\mathrm{Acc}$, $\Delta R_{\mathrm{tar}}$ & Change when the teacher is repaired, in pp \\
+\end{supertabular}\par
+}
+
+\FloatBarrier
+
+\bibliographystyle{IEEEtran}
+\bibliography{ref}
+
+\end{document}
