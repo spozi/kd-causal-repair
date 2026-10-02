@@ -28,6 +28,9 @@ baseline/
 # Unrelated local writing.
 news/
 
+# A separate project that keeps its own history under subprojects/.
+subprojects/
+
 # Leftover from an aborted clone of this repository into itself.
 kd-repair/
 
