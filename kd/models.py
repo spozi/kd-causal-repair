@@ -166,13 +166,34 @@ class CifarResNet(VisionModel):
         return ModelOutput(self.classifier(self.pool(images).flatten(1)), features)
 
 
+_MODEL_ALIASES = {
+    "convnet6_w32": "cifar_teacher",
+    "convnet6_w16": "cifar_student",
+    "resnet18_smallstem": "cifar_resnet18",
+    "resnet34_smallstem": "cifar_resnet34",
+    "resnet50_smallstem": "cifar_resnet50",
+}
+
 MODEL_NAMES = ("tiny_small", "tiny_medium", "tiny_large", "resnet18", "resnet34", "resnet50",
                "cifar_student", "cifar_teacher", "cifar_resnet18", "cifar_resnet34", "cifar_resnet50",
-               "resnet8", "resnet20")
+               "resnet8", "resnet20", *_MODEL_ALIASES)
+
+
+def canonical_model_name(name: str) -> str:
+    """Resolve an architecture alias for routing, without changing saved model metadata.
+
+    Legacy IDs remain the canonical routing keys so old checkpoints and experiment
+    configurations retain their exact names. Dataset-neutral aliases construct the
+    same architecture; their classifier size is still determined by ``num_classes``.
+    """
+    if name not in MODEL_NAMES:
+        raise ValueError(f"Unknown model {name!r}; choose from {MODEL_NAMES}")
+    return _MODEL_ALIASES.get(name, name)
 
 
 def create_model(name: str, num_classes: int) -> VisionModel:
     """A single factory keeps architecture selection out of training and losses."""
+    name = canonical_model_name(name)
     tiny_widths = {"tiny_small": (16, 32, 64), "tiny_medium": (32, 64, 128),
                    "tiny_large": (64, 128, 256)}
     if name in tiny_widths:

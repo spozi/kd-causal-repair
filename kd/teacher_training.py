@@ -1,7 +1,7 @@
 """Isolated teacher-training interventions using the ordinary inference contract.
 
-These experiments deliberately do not change the original training engine or its
-protocol hashes. Student KD continues to use ``engine.run_experiment``.
+These experiments do not rewrite the original training engine or saved protocols.
+Student KD continues to use ``engine.run_experiment``.
 """
 
 from copy import deepcopy
@@ -22,7 +22,7 @@ from .baseline_artifacts import TEACHER_FILES, verify_manifest, write_manifest
 from .checkpoints import (capture_rng, fingerprint, load_model_checkpoint, metadata,
                           restore_rng, save_checkpoint, tensor_state_fingerprint, write_json)
 from .config import ExperimentConfig
-from .data import build_data, normalization
+from .data import MEDMNIST_SOURCES, build_data, normalization
 from .engine import seed_everything
 from .evaluation import collect_predictions, prediction_metrics
 from .models import create_model
@@ -129,6 +129,49 @@ def teacher_loss(logits, targets, recipe: TeacherRecipe, class_counts):
     return recipe.loss_scale * loss
 
 
+_STANDARD_RANDAUGMENT_OPERATIONS = (
+    "Identity", "ShearX", "ShearY", "TranslateX", "TranslateY", "Rotate",
+    "Brightness", "Color", "Contrast", "Sharpness", "Posterize", "Solarize",
+    "AutoContrast", "Equalize",
+)
+
+
+def randaugment_policy(source):
+    """Declare operation space; restricted variants are not standard RandAugment.
+
+    The photometric restrictions avoid geometric/colour substitutions on label-
+    sensitive sources. They are conservative starting policies, not evidence of
+    task-specific invariance or an optimized augmentation search.
+    """
+    if source in {"svhn", "gtsrb"}:
+        name = "restricted_digit_sign_photometric"
+        operations = ("Identity", "Brightness", "Contrast", "Sharpness", "AutoContrast", "Equalize")
+    elif source in MEDMNIST_SOURCES:
+        name = "restricted_medical_photometric"
+        operations = ("Identity", "Brightness", "Contrast", "Sharpness")
+    else:
+        name = "torchvision_standard"
+        operations = _STANDARD_RANDAUGMENT_OPERATIONS
+    return {"name": name, "operations": list(operations)}
+
+
+class PolicyRandAugment(transforms.RandAugment):
+    """Use torchvision magnitudes/RNG with a recorded, bounded operation space."""
+
+    def __init__(self, *, operations, **kwargs):
+        super().__init__(**kwargs)
+        self.operations = tuple(operations)
+        if not self.operations or len(set(self.operations)) != len(self.operations):
+            raise ValueError("RandAugment operations must be nonempty and unique")
+
+    def _augmentation_space(self, num_bins, image_size):
+        available = super()._augmentation_space(num_bins, image_size)
+        missing = set(self.operations) - available.keys()
+        if missing:
+            raise ValueError(f"Unsupported RandAugment operations: {sorted(missing)}")
+        return {name: available[name] for name in self.operations}
+
+
 def add_randaugment(data, config, recipe):
     if not recipe.randaugment:
         return
@@ -138,9 +181,18 @@ def add_randaugment(data, config, recipe):
     operations = list(dataset.transform.transforms)
     position = next(i for i, transform in enumerate(operations) if isinstance(transform, transforms.ToTensor))
     mean, _ = normalization(config.data.source)
-    operations.insert(position, transforms.RandAugment(
-        num_ops=recipe.randaugment_ops, magnitude=recipe.randaugment_magnitude,
-        fill=tuple(round(255 * value) for value in mean)))
+    policy = randaugment_policy(config.data.source)
+    arguments = {"num_ops": recipe.randaugment_ops, "magnitude": recipe.randaugment_magnitude,
+                 "fill": tuple(round(255 * value) for value in mean)}
+    if policy["name"] == "torchvision_standard":
+        augmentation = transforms.RandAugment(**arguments)
+        available = augmentation._augmentation_space(augmentation.num_magnitude_bins,
+                                                     (config.data.image_size,) * 2)
+        if list(available) != policy["operations"]:
+            raise ValueError("Torchvision RandAugment operation space changed; update the frozen policy")
+    else:
+        augmentation = PolicyRandAugment(operations=policy["operations"], **arguments)
+    operations.insert(position, augmentation)
     dataset.transform = transforms.Compose(operations)
 
 
@@ -217,6 +269,7 @@ def train_teacher(config: ExperimentConfig, recipe: TeacherRecipe, *, selection_
     directory = Path(config.output_dir) / config.name
     identity = {"config": config.to_dict(), "recipe": asdict(recipe),
                 "selection_metric": selection_metric,
+                "augmentation_policy": randaugment_policy(config.data.source) if recipe.randaugment else None,
                 "initial_checkpoint_sha256": (fingerprint(config.student.checkpoint)
                                               if config.student.checkpoint else None),
                 "source_sha256": {name: fingerprint(Path(__file__).parent / name)
@@ -322,6 +375,7 @@ def train_teacher(config: ExperimentConfig, recipe: TeacherRecipe, *, selection_
     save_checkpoint(directory / "student.pt", best)
     summary = {"checkpoint": str(directory / "student.pt"), "checkpoint_sha256": fingerprint(directory / "student.pt"),
                "initial_student_sha256": initial, "recipe": asdict(recipe), "data": data.provenance,
+               "augmentation_policy": identity["augmentation_policy"],
                "class_counts": counts, "best_epoch": best["epoch"] + 1,
                "selection_metric": selection_metric, "validation": _validation(model, data, device, config),
                "training_seconds": sum(row["seconds"] for row in history),

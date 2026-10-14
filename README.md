@@ -13,9 +13,10 @@ label smoothing, Balanced Softmax, raw/probability MSE, SAM, EMA, and a combined
 augmentation recipe. It compares teacher quality with matched downstream KD,
 includes the original channel-repair method using the common CE teacher,
 freezes validation selection before test access, and documents recent 2025–2026
-follow-up methods. Inspect a pilot with `python -m kd.teacher_baselines plan
---config configs/teacher_baselines/cifar10_lt100.json --output
-runs/teacher-baselines-v2/cifar10-lt100 --dry-run`.
+follow-up methods. Inspect all 13 datasets and four profiles without writes or
+training using `python -m kd.teacher_baseline_matrix plan --output
+runs/teacher-baselines-v3/matrix-plan --dry-run`. Add
+`--pairs convnet6 resnet34_resnet18` to include both supported pairings.
 
 **CIFAR-10 is supported**, with a full-data, repeated-seed study and a held-out test phase. See [the CIFAR-10 protocol](docs/cifar10.md). Generated results live in `runs/cifar10/report.json`; render `report.md` and figures with `python -m kd.reporting --study runs/cifar10` after the study completes.
 
@@ -137,7 +138,15 @@ python -m kd train --config configs/student.toml
 
 The example trains ResNet-34 as a teacher and ResNet-18 as a student. Model factories use `weights=None` and make no network requests. Assess the trained teacher's validation accuracy, confidence, NLL, entropy, and calibration before relying on it. A completed training epoch verifies checkpoint provenance, not teacher quality. KD fails if no teacher checkpoint is supplied.
 
-Available model adapters: `tiny_small`, `tiny_medium`, `tiny_large`, `resnet18`, `resnet34`, `resnet50`, `cifar_student`, and `cifar_teacher`. Tiny models are useful for offline verification; the CIFAR pair uses six convolutions designed for 32×32 images. Set `student.checkpoint` to initialize from a compatible project checkpoint. Checkpoints require the same model name, class ordering, and input preprocessing; external raw state dictionaries must first be converted to this contract.
+Dataset-neutral model IDs include `convnet6_w32`/`convnet6_w16` and
+`resnet18_smallstem`, `resnet34_smallstem`, `resnet50_smallstem`. Standard-stem
+`resnet18`/`resnet34`/`resnet50`, compact `resnet8`/`resnet20`, and the three
+`tiny_*` smoke models remain available. All legacy `cifar_*` IDs are retained;
+their prefix describes an architecture variant, not a dataset restriction. Set
+`student.checkpoint` to initialize from a compatible checkpoint. Checkpoints still
+require their declared model ID, class ordering, and preprocessing; aliases do
+not silently rename old artifacts. External raw state dictionaries must first be
+converted to this contract.
 
 For a supervised student, set `distillation.method = "supervised"` and `feature_weight = 0.0`. For classical KD, set `method = "kd"`. For DKD, use `method = "dkd"`. Choose a separate run `name` for each experiment.
 

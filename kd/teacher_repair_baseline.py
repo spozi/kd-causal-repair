@@ -13,6 +13,7 @@ import time
 
 from .baseline_artifacts import TEACHER_FILES, read_json, verify_manifest, write_manifest
 from .checkpoints import fingerprint, write_json
+from .models import canonical_model_name
 from .neuron_surgery_study import (NeuronSurgerySpec, resolve_target_classes,
                                    run_neuron_surgery_study)
 
@@ -68,10 +69,11 @@ def repair_spec(study, seed):
     factor = {"lt-if10": 10.0, "lt-if50": 50.0, "lt-if100": 100.0}.get(
         data.dataset_profile, data.imbalance_factor)
     model = study.teacher.student.name
-    stages = (("stage2", "stage3") if model in {"cifar_teacher", "cifar_student"}
+    architecture = canonical_model_name(model)
+    stages = (("stage2", "stage3") if architecture in {"cifar_teacher", "cifar_student"}
               else ("stage3", "stage4"))
-    if model not in {"cifar_teacher", "cifar_student", "resnet18", "resnet34", "resnet50",
-                     "cifar_resnet18", "cifar_resnet34", "cifar_resnet50"}:
+    if architecture not in {"cifar_teacher", "cifar_student", "resnet18", "resnet34", "resnet50",
+                            "cifar_resnet18", "cifar_resnet34", "cifar_resnet50"}:
         raise ValueError("Teacher repair requires a CifarCNN or torchvision ResNet adapter")
     result = NeuronSurgerySpec(
         name=f"teacher-repair-seed{seed}", teacher_run=f"teacher_control_seed{seed}",

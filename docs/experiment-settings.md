@@ -6,11 +6,11 @@ The experiment scope is **all 13 project datasets at four profiles**, giving
 **52 dataset/profile settings**. This document defines the dataset-specific
 policies once and the shared teacher, student, KD, and repair parameters once.
 
-The saved main-project repair matrix is the reference protocol. Additional
-teacher-training baselines should be compared across that same dataset scope,
-not only CIFAR-10 and CIFAR-100. Their implementation and configuration status
-are distinguished in Section 6; this document does not claim unrun comparisons
-are completed.
+The saved main-project repair matrix is the reference protocol. The new
+teacher-baseline matrix planner also covers this full scope, with configurable
+ConvNet-6 and ResNet-34 -> ResNet-18 pairings. Section 6 distinguishes generated
+configurations from completed runs; no full-matrix training has been launched
+by this revision.
 
 Sources of truth are the [saved matrix plan](../runs/experiment1-multidataset/matrix-plan/protocol.json),
 [dataset catalog](../kd/catalog/v1.json), and each run's frozen configuration and
@@ -98,8 +98,12 @@ historical factory/checkpoint names for these architectures. The factory creates
 `CifarCNN(width=32 or 16, num_classes=C)`; it contains no CIFAR loader or fixed
 10/100-class restriction. The same architecture is instantiated separately for
 each of the 13 datasets, with its classifier sized to that dataset's class count.
-This document changes display names only; it does not rename those identifiers
-or invalidate saved checkpoint metadata and frozen protocols.
+The factory now also accepts dataset-neutral IDs `convnet6_w32` and
+`convnet6_w16`, plus `resnet18_smallstem`, `resnet34_smallstem`, and
+`resnet50_smallstem`. Each alias constructs the exact corresponding legacy
+architecture and initialization. Existing IDs remain supported; saved protocols
+and checkpoint metadata are not rewritten. Checkpoint loading still requires
+the declared model ID, so an alias does not silently re-label an old checkpoint.
 
 Architecture names are dataset-independent, but **trained checkpoints remain
 dataset/profile-specific**, including their class ordering and preprocessing.
@@ -158,7 +162,7 @@ not make the architecture dataset-specific.
 
 | Teacher | Student | Comparison type | Literature benchmark / evidence | Current project support |
 |---|---|---|---|---|
-| ResNet-34 | ResNet-18 | Same-family depth reduction | ImageNet; [DKD, Table 8](https://arxiv.org/html/2203.08679) | Both factories and teacher-repair maps available; fresh pairing runs required |
+| ResNet-34 | ResNet-18 | Same-family depth reduction | ImageNet; [DKD, Table 8](https://arxiv.org/html/2203.08679) | Both factories/repair maps and matrix pairing preset available; actual runs pending |
 | ResNet-56 | ResNet-20 | Same-family depth reduction | CIFAR-100; [CRD](https://github.com/HobbitLong/RepDistiller#benchmark-results-on-cifar-100), [DKD, Table 6](https://arxiv.org/html/2203.08679) | Student factory available; teacher variant not exposed; teacher-repair map needed |
 | ResNet-110 | ResNet-32 | Same-family depth reduction | CIFAR-100; [CRD](https://github.com/HobbitLong/RepDistiller#benchmark-results-on-cifar-100), [DKD, Table 6](https://arxiv.org/html/2203.08679) | Neither variant exposed in the factory; teacher-repair map needed |
 | ResNet-32x4 | ResNet-8x4 | Same-family, widened residual networks | CIFAR-100; [CRD](https://github.com/HobbitLong/RepDistiller#benchmark-results-on-cifar-100), [DKD, Table 6](https://arxiv.org/html/2203.08679) | Width-4 variants and teacher-repair map missing |
@@ -190,8 +194,8 @@ the teacher's repair map already exist. This is a project-specific integration
 priority, not a claim that it is empirically best. For this project's `32 x 32`
 inputs, explicitly freeze the small-input `3 x 3`, stride-1 stem without initial
 max pooling; report it as a small-stem adaptation, not an exact ImageNet
-reproduction. The legacy small-stem config keys are `cifar_resnet34` and
-`cifar_resnet18`; their prefix also does not restrict dataset choice.
+reproduction. Preferred small-stem config IDs are `resnet34_smallstem` and
+`resnet18_smallstem`; legacy `cifar_resnet34`/`cifar_resnet18` remain supported.
 
 WRN-40-2 -> WRN-16-2 provides a literature-backed compact same-family extension;
 ResNet-50 -> MobileNet-V2 adds a cross-family/mobile extension once the missing
@@ -258,9 +262,9 @@ The main-matrix repair protocol applies to every dataset/profile.
 | Hard-example source | Canonical, non-augmented training diagnostics |
 | Target fraction | `0.2` per target class; retain all mistakes, then fill with highest-NLL correct examples |
 | Quota caveat | Not a strict 20% cap when mistakes exceed the quota |
-| Companions | `5`; cosine matching of normalized pooled `stage3` features |
+| Companions | `5`; cosine matching of normalized pooled final localization-stage features: `stage3` for ConvNet-6, `stage4` for ResNet |
 | Sparse-class fallback | Enabled for the main matrix; correct non-target same-class examples first, then same-class fallback with replacement; singleton classes use gradient-only attribution |
-| Localization stages / score | `stage2, stage3` / differential activation discrepancy times absolute error-margin gradient |
+| Localization stages / score | ConvNet-6: `stage2, stage3`; ResNet: `stage3, stage4`; differential activation discrepancy times absolute error-margin gradient |
 | Bootstrap | `20` within-class repetitions; equal class weighting; seed `2026` |
 | Screening thresholds | Top fraction `0.25`; stability at least `0.7` |
 | Causal screening | Individually zero a channel; positive target-margin gain and preservation accuracy loss at most `0.005` |
@@ -274,7 +278,7 @@ The main-matrix repair protocol applies to every dataset/profile.
 | Precision / memory format | Inherit the teacher run's settings |
 | Target CE coefficient | `1.0` |
 | Preservation KD | Original teacher as frozen anchor; weight `1.0`, `T=4`, including `T^2` |
-| Feature preservation | Weight `0.25`, matching `stage2/stage3` features |
+| Feature preservation | Weight `0.25`, matching the teacher's configured localization-stage features |
 | Preservation hard-label CE | Disabled, weight `0` |
 | Mutable coordinates | Selected producing convolution rows, corresponding BatchNorm affine coordinates, and directly connected consumer weights |
 | Frozen state | Every unselected parameter coordinate and every model buffer |
@@ -308,7 +312,7 @@ using Sections 1-5 and declare any overrides before training.
 | Teacher condition | Intervention beyond the dataset's base policy |
 |---|---|
 | `control` | Ordinary hard-label CE |
-| `randaugment` | RandAugment `N=2, M=9` before tensor conversion; fill uses normalization mean RGB |
+| `randaugment` | RandAugment `N=2, M=9` before tensor conversion; source-specific operation policy below; fill uses normalization mean RGB |
 | `mixup` | `alpha=0.2`; one Beta-distributed mixing coefficient per batch; mix images and labels |
 | `cutmix` | `alpha=1.0`; patch replacement; labels weighted by actual clipped patch area |
 | `label_smoothing` | `epsilon=0.1`; targets `0.9*one_hot + 0.1/C` |
@@ -324,30 +328,48 @@ Mixup/CutMix apply to every eligible batch. Both MSE losses average over example
 and classes, with scale `1`; probability MSE is summed-class Brier score divided
 by `C`. Balanced Softmax is redundant with CE for exactly equal class counts,
 but a naturally unequal `balanced` dataset can still have unequal training counts.
-Augmentation operations must be reviewed for label validity on digits, traffic
-signs, and medical images before freezing the full-scope comparison.
+The runner records the following operation policies in study/teacher protocols
+and teacher summaries. Standard CIFAR operation order and RNG behavior are
+unchanged; restricted sources use the same torchvision magnitudes but a smaller
+operation space.
+
+| Sources | Recorded policy | Allowed RandAugment operations |
+|---|---|---|
+| SVHN, GTSRB | `restricted_digit_sign_photometric` | Identity, Brightness, Contrast, Sharpness, AutoContrast, Equalize |
+| PathMNIST, BloodMNIST, DermaMNIST, OrganAMNIST | `restricted_medical_photometric` | Identity, Brightness, Contrast, Sharpness |
+| Other catalog datasets | `torchvision_standard` | Identity, ShearX/Y, TranslateX/Y, Rotate, Brightness, Color, Contrast, Sharpness, Posterize, Solarize, AutoContrast, Equalize |
+
+The restricted variants exclude geometric and colour-substitution operations
+on label-sensitive sources. They are conservative starting policies, not proof
+of clinical/traffic-label invariance, optimized policies, SRA, or exact standard
+RandAugment reproductions. Dataset-level review remains necessary. Unsupported
+operation-space changes fail instead of silently changing the frozen policy.
 
 ### Configuration status and non-shared settings
 
-Only two ready-made teacher-baseline presets currently exist:
+Two original static teacher-baseline presets remain:
 [CIFAR-10-LT100](../configs/teacher_baselines/cifar10_lt100.json) and
 [balanced CIFAR-100](../configs/teacher_baselines/cifar100_balanced.json).
-**The all-13-dataset baseline extension is the intended scope, not an already
-configured or completed 52-setting recipe benchmark.** These presets are
-implementation pilots and must not redefine the main experiment's dataset scope.
+The implemented [all-dataset planner](../kd/teacher_baseline_matrix.py) now
+generates immutable configs, a source-bound protocol, and a queue for every
+dataset/profile/pair. Default pairing `convnet6` creates 52 settings; adding
+`resnet34_resnet18` creates 104. Planning neither fetches data nor trains models.
+Actual runs and GPU effectiveness remain pending.
 
-| Difference | Saved main matrix | Existing baseline pilots |
+| Difference | Saved main matrix | New all-dataset baseline matrix |
 |---|---|---|
-| Runtime configuration | Assigned CUDA device, precision `auto`, CUDA workers `4` | Device `auto`, precision `float32`, workers `0` |
-| Sparse-class fallback | Enabled | Disabled |
+| Runtime configuration | Assigned CUDA device, precision `auto`, CUDA workers `4` | Defaults: device `auto`, precision `float32`, workers `0`; explicit overrides supported |
 | Supervised-student reference | Not included | One per student seed |
 | Rejected repair handling | Terminate repair study | Keep a no-change condition and reuse control KD students |
 | Recipe selection | Original-vs-repaired paired transfer evaluation | Mean student validation balanced accuracy for long-tail, accuracy for balanced |
 
-All use the same shared optimization and KD values unless an explicit config
-overrides them. Both existing pilots happen to use 81 epochs because their profiles
-are IF100 and balanced. Full-scope configs must declare runtime/fallback choices;
-they cannot silently inherit those two pilots' restricted settings.
+The new generator preserves profile epoch budgets, dataset-specific splits/flips,
+and KD values, enables sparse-class fallback, and uses neutral model IDs. It
+omits Balanced Softmax for balanced CIFAR-10/CIFAR-100, where it duplicates CE.
+The original two static pilots retain their legacy IDs and disabled sparse
+fallback for compatibility; they do not redefine the all-dataset defaults.
+Explicit or auto-resolved FP16 with SAM is rejected before training/writes;
+SAM supports float32/BF16. Runtime resolution is skipped for dry-run planning.
 
 Teacher data, architecture, initialization, and student training are matched
 within each comparison. Compute is not equalized: SAM adds a second gradient
@@ -357,6 +379,7 @@ researched, unimplemented follow-ups.
 
 Sources: [teacher recipes](../kd/teacher_training.py),
 [benchmark orchestration](../kd/teacher_baselines.py),
+[all-dataset planner](../kd/teacher_baseline_matrix.py),
 [repair adapter](../kd/teacher_repair_baseline.py), and
 [research and benchmark protocol](teacher-training-baselines.md).
 
@@ -370,13 +393,17 @@ Sources: [teacher recipes](../kd/teacher_training.py),
 | Test access | After the applicable teacher selection and student checkpoints are frozen |
 | Outcomes | Accuracy, balanced accuracy, target macro recall, NLL, Brier score, ECE; parameter/latency/training-cost information |
 | Provenance | Frozen configs, split identities, source/checkpoint hashes, and protocol/completion artifacts |
+| Live-data verification | Rebuilt training/validation provenance must match the frozen run before evaluation predictions |
 | Retuning from test results | Not part of the protocol |
 
 The main matrix contains 52 planned teacher fits and 156 original-teacher KD
 student fits. Repair adds at most six candidate fits per setting (312 maximum)
 and three downstream students per accepted repair. It has no separate supervised
-student reference. Recipe-expanded comparisons require their own compute budget;
-52 dataset/profile settings do not mean only 52 training fits.
+student reference. The new one-pair recipe matrix has at most 2,904 fits:
+570 ordinary teachers, 312 repair candidates, 1,866 KD students, and 156
+supervised references. Both supported pairings double this bound to 5,808 fits.
+Rejected repairs and infeasible channel budgets reduce actual fitting. These
+are plan counts, not executed runs; 52 settings do not mean only 52 fits.
 
 The [saved matrix summary](../runs/experiment1-multidataset/matrix_summary.json)
 reports all 52 jobs finished, 23 accepted repairs, 29 no-repair outcomes, and 10
@@ -423,3 +450,20 @@ jq '{datasets, profiles, job_count: (.jobs | length)}' \
 jq '{job_count, all_jobs_finished, complete_count, successful_transfer_count}' \
   runs/experiment1-multidataset/matrix_summary.json
 ```
+
+Inspect the new all-dataset baseline plan without files, datasets, or training:
+
+```bash
+python -m kd.teacher_baseline_matrix plan \
+  --output runs/teacher-baselines-v3/matrix-plan --dry-run
+
+python -m kd.teacher_baseline_matrix plan \
+  --output runs/teacher-baselines-v3/matrix-plan \
+  --pairs convnet6 resnet34_resnet18 --dry-run
+```
+
+Omit `--dry-run` only to materialize the immutable configs/queue. This still
+does not train. Plan, study-output, and dataset-cache roots must be disjoint;
+incompatible plans and unexpected files/symlinks are rejected. Execute a chosen
+queue row with the existing `kd.teacher_baselines train --config CONFIG --output
+OUTPUT` command; final test access remains a separate `evaluate` phase.

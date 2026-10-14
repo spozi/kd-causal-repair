@@ -8,6 +8,11 @@ Implementation update: 14 October 2026. Protocol version 2 includes the original
 teacher-repair condition and stricter completion/provenance verification. Existing
 repair code and historical experiment directories are retained without edits.
 
+The all-dataset extension uses a separate immutable matrix planner with neutral
+model IDs, profile-specific epoch budgets, sparse-class repair fallback, recorded
+dataset-specific augmentation policies, and early runtime/data-identity guards.
+See [experiment settings](experiment-settings.md) for the consolidated parameters.
+
 ## Research question
 
 Which teacher-training interventions improve the teacher, and which improve its
@@ -157,7 +162,8 @@ EMA averages parameters and copies model buffers; validation always uses the EMA
 model for that arm, not a post-hoc choice between raw and EMA weights.
 
 Both pilot configs use float32 for all arms, including SAM. The runner supports
-BF16 and ordinary scaled FP16 training, but rejects FP16 SAM. CUDA-specific
+BF16 and ordinary scaled FP16 training, but rejects FP16 SAM before any study
+training or writes, including when `auto` resolves to FP16. CUDA-specific
 execution still needs verification on the intended GPU server.
 
 ## Recent SOTA-oriented follow-ups: researched, not implemented
@@ -224,8 +230,43 @@ do not tune from test outcomes.
 Existing CIFAR test results have already been examined in this workspace. New
 results on those same images remain exploratory, even though this runner gates
 test access. An independent confirmation split is needed for confirmatory claims.
-Before expanding to all 13 datasets, review augmentation semantics: generic
-rotations/color changes can alter traffic-sign, digit, or medical-image labels.
+The all-dataset extension records restricted photometric RandAugment spaces for
+SVHN/GTSRB and the four MedMNIST sources. These are declared variants, not standard
+RandAugment or proven task invariances; dataset-level review remains necessary.
+
+## All-dataset matrix
+
+`kd.teacher_baseline_matrix` generates configurations for all 13 catalog datasets
+at balanced/IF10/IF50/IF100 profiles. It reuses the main matrix's split, flip,
+class-head, and epoch policies (81/49/71/81 epochs), with explicit runtime
+defaults of device `auto`, precision `float32`, workers `0`, and sparse repair
+fallback enabled. These defaults are independent of the two original static
+pilot JSONs, which remain unchanged.
+
+Supported pairing presets are `convnet6` (ConvNet-6-W32 -> ConvNet-6-W16) and
+`resnet34_resnet18` (small-stem ResNet-34 -> ResNet-18). The default one-pair plan
+has 52 settings and at most 2,904 fits; both pairings have 104 settings and at most
+5,808 fits. These are planned upper bounds, not completed training. Other
+literature pairings remain pending model/repair-map integration.
+
+```bash
+# Read-only: all datasets/profiles, no writes or dataset/model access.
+python -m kd.teacher_baseline_matrix plan \
+  --output runs/teacher-baselines-v3/matrix-plan --dry-run
+
+# Both supported architecture pairs; still read-only.
+python -m kd.teacher_baseline_matrix plan \
+  --output runs/teacher-baselines-v3/matrix-plan \
+  --pairs convnet6 resnet34_resnet18 --dry-run
+```
+
+Without `--dry-run`, planning writes only `protocol.json`, `configs/*.json`, and
+`jobs.tsv`; it does not launch training. Each queue row identifies the config and
+its separate study output for the ordinary `teacher_baselines train/evaluate`
+phases. Dataset, plan, and study roots must not overlap. Incompatible protocols,
+config edits, unexpected files, and unsafe symlink paths fail before overwrites.
+The full-scope plan binds its own source and all inherited computational sources.
+Study policies and teacher artifacts record the exact RandAugment operation space.
 
 ## Commands
 
@@ -278,6 +319,9 @@ and selection. Source hashes include `metrics.py` and the active repair code.
 The normal `student.pt` contract lets every new teacher be consumed by existing
 KD code. Changes to source or protocol require a new output root. GPU overrides
 now also govern report evaluation and precision; evaluation is not forced to CPU.
+Freshly rebuilt training/validation provenance is compared with the frozen run
+before reporting predictions; adding explicit test-loader metadata is permitted,
+but a changed dataset, archive, or split is rejected.
 
 Main study artifacts:
 

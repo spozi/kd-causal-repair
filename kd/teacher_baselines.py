@@ -23,11 +23,11 @@ from .data import build_data
 from .engine import run_experiment
 from .evaluation import collect_predictions, prediction_metrics, save_prediction_report
 from .models import MODEL_NAMES, create_model
-from .runtime import configure_accelerator, prepare_model, resolve_device
+from .runtime import configure_accelerator, prepare_model, resolve_device, resolve_precision
 from .teacher_repair_baseline import (REPAIR_FILES, REPAIR_NAME, TeacherRepairOptions,
                                      repair_options, repair_spec, repair_targets, train_repair_teacher,
                                      verify_repair_details)
-from .teacher_training import RECIPES, train_teacher
+from .teacher_training import RECIPES, randaugment_policy, train_teacher
 
 
 def _json(value):
@@ -70,6 +70,8 @@ class TeacherBaselineSpec:
             if name not in RECIPES:
                 raise ValueError(f"Unknown teacher recipe: {name}")
             RECIPES[name].validate()
+            if RECIPES[name].sam_rho and self.teacher.train.precision == "float16":
+                raise ValueError("SAM supports float32/bfloat16; set teacher precision explicitly")
         for seeds in (self.teacher_seeds, self.student_seeds):
             if (not seeds or len(set(seeds)) != len(seeds)
                     or any(not isinstance(seed, int) or isinstance(seed, bool) or seed < 0 for seed in seeds)):
@@ -158,6 +160,9 @@ def plan_study(spec, output):
                                    for recipe, seed, config in students],
                   "supervised_student_runs": [config.to_dict() for config in supervised],
                   "counts": counts,
+                  "teacher_augmentation_policies": {
+                      name: randaugment_policy(spec.teacher.data.source)
+                      for name in spec.recipes if name != REPAIR_NAME and RECIPES[name].randaugment},
                   "repair_protocols": ([repair_spec(spec, seed).to_dict() for seed in spec.teacher_seeds]
                                        if spec.repair is not None else []),
                   "repair_rejection": "reuse control teacher and matched KD students; zero intervention effect",
@@ -281,11 +286,26 @@ def _target_classes(counts):
     return tuple(sorted(range(len(counts)), key=lambda label: (counts[label], label))[:len(counts) // 2])
 
 
+def _training_data_identity(provenance):
+    """Compare rebuilt training/validation data without final-evaluation additions."""
+    identity = _json(provenance)
+    sizes = identity.get("split_sizes", {})
+    sizes.pop("test", None)
+    sizes.pop("confirmation", None)
+    for key in ("test_index_sha256", "test_per_class", "test_policy",
+                "confirmation_index_sha256", "confirmation_per_class", "confirmation_policy"):
+        identity.pop(key, None)
+    return identity
+
+
 def _validate_checkpoint(config, split="val", output=None, *, targets=None):
     device = resolve_device(config.train.device)
     configure_accelerator(device, config.train.cuda_mode)
     data = build_data(config.data, replace(config.train, workers=0),
                       include_test=split == "test", diagnostic=True)
+    recorded = read_json(Path(config.output_dir) / config.name / "summary.json")["data"]
+    if _training_data_identity(data.provenance) != _training_data_identity(recorded):
+        raise ValueError("Evaluation data differs from the frozen training/validation provenance")
     model = create_model(config.student.name, config.data.num_classes)
     load_model_checkpoint(model, Path(config.output_dir) / config.name / "student.pt",
                           metadata(config.student.name, data.classes, config.data.image_size, config.data.source))
@@ -466,6 +486,13 @@ def run_study(spec, output, *, phase="train", dry_run=False):
     protocol = plan_study(spec, output)
     if dry_run:
         return {"dry_run": True, "phase": phase, "protocol": protocol}
+    if phase == "train":
+        # Resolve auto precision before writing a protocol or fitting earlier arms.
+        device = resolve_device(spec.teacher.train.device)
+        precision = resolve_precision(spec.teacher.train.precision, device)
+        if precision == "float16" and any(
+                name != REPAIR_NAME and RECIPES[name].sam_rho for name in spec.recipes):
+            raise ValueError("SAM supports float32/bfloat16; set teacher precision explicitly")
     directory = Path(output).resolve()
     _freeze_protocol(directory, protocol)
     if phase == "plan":

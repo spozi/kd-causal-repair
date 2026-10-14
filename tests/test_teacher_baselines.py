@@ -321,12 +321,12 @@ class _TinyCifar:
 
 
 class TeacherRepairIntegrationTests(unittest.TestCase):
-    def spec(self, root):
+    def spec(self, root, *, teacher_model="cifar_teacher", student_model="cifar_student"):
         base = smoke_spec()
         return replace(base, teacher=replace(base.teacher,
                        data=DataConfig(source="cifar10", root=root, num_classes=10, image_size=32),
-                       student=ModelConfig("cifar_teacher")),
-                       student_model="cifar_student", recipes=("control", REPAIR_NAME),
+                       student=ModelConfig(teacher_model)),
+                       student_model=student_model, recipes=("control", REPAIR_NAME),
                        repair=TeacherRepairOptions(channel_budgets=(1,), learning_rates=(0.001,),
                            repair_epochs=1, repair_samples_per_epoch=8, repair_batch_size=8,
                            companion_count=1, allow_sparse_class_fallback=True))
@@ -375,6 +375,37 @@ class TeacherRepairIntegrationTests(unittest.TestCase):
                 base = smoke_spec()
                 replace(base, teacher=replace(base.teacher, student=ModelConfig("cifar_teacher")),
                         recipes=("control", REPAIR_NAME), repair=TeacherRepairOptions()).validate()
+
+    def test_neutral_teacher_aliases_keep_explicit_repair_stages_and_model_identity(self):
+        with tempfile.TemporaryDirectory() as root:
+            for name, stages in (
+                ("convnet6_w32", ["stage2", "stage3"]),
+                ("convnet6_w16", ["stage2", "stage3"]),
+                ("resnet18_smallstem", ["stage3", "stage4"]),
+                ("resnet34_smallstem", ["stage3", "stage4"]),
+                ("resnet50_smallstem", ["stage3", "stage4"]),
+            ):
+                with self.subTest(model=name):
+                    spec = self.spec(root, teacher_model=name, student_model="convnet6_w16")
+                    plan = plan_study(spec, Path(root) / name)
+                    repair = plan["repair_protocols"][0]
+                    self.assertEqual(repair["stages"], stages)
+                    self.assertEqual(repair["teacher_model"], name)
+                    self.assertEqual(repair["student_model"], "convnet6_w16")
+                    self.assertEqual(plan["student_runs"][0]["config"]["teacher"]["name"], name)
+
+    def test_neutral_alias_runs_actual_repair_and_frozen_teacher_kd(self):
+        with tempfile.TemporaryDirectory() as root, redirect_stdout(io.StringIO()), \
+                patch("kd.data.datasets.CIFAR10", _TinyCifar):
+            spec = self.spec(root, teacher_model="convnet6_w32", student_model="convnet6_w16")
+            output = Path(root) / "neutral-study"
+            self.assertEqual(run_study(spec, output)["status"], "trained")
+            teacher = torch.load(output / "teacher_control_seed41/student.pt", weights_only=True)
+            student = torch.load(output / "kd_control_teacher41_seed42/student.pt", weights_only=True)
+            self.assertEqual(teacher["model_name"], "convnet6_w32")
+            self.assertEqual(student["model_name"], "convnet6_w16")
+            self.assertTrue((output / "teacher_repair_seed41/repair/localization.json").is_file())
+            self.assertEqual(run_study(spec, output, phase="evaluate")["status"], "evaluated")
 
     def test_rejected_repair_reuses_control_and_has_exactly_zero_effect(self):
         with tempfile.TemporaryDirectory() as root, redirect_stdout(io.StringIO()), \
