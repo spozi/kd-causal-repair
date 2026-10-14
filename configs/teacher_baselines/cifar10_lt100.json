@@ -1,0 +1,45 @@
+{
+  "teacher": {
+    "name": "teacher",
+    "data": {
+      "source": "cifar10",
+      "root": "data",
+      "num_classes": 10,
+      "image_size": 32,
+      "augmentation": "basic",
+      "horizontal_flip": true,
+      "validation_fraction": 0.1,
+      "split_seed": 2026,
+      "imbalance_factor": 100.0
+    },
+    "student": {"name": "cifar_teacher"},
+    "distillation": {"method": "supervised"},
+    "train": {
+      "epochs": 81,
+      "batch_size": 128,
+      "learning_rate": 0.05,
+      "momentum": 0.9,
+      "weight_decay": 0.0005,
+      "workers": 0,
+      "threads": 4,
+      "device": "auto",
+      "precision": "float32",
+      "seed": 41
+    },
+    "benchmark": {"warmup": 20, "iterations": 100}
+  },
+  "student_model": "cifar_student",
+  "teacher_seeds": [41],
+  "student_seeds": [42, 43, 44],
+  "teacher_selection_metric": "accuracy",
+  "student_selection_metric": "balanced_accuracy",
+  "temperature": 4.0,
+  "kd_weight": 0.5,
+  "warmup_epochs": 5,
+  "repair": {},
+  "recipes": [
+    "control", "randaugment", "mixup", "cutmix", "label_smoothing",
+    "balanced_softmax", "mse_logits", "mse_probabilities", "sam", "ema",
+    "randaugment_cutmix_ema", "teacher_repair"
+  ]
+}

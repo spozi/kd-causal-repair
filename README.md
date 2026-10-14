@@ -2,6 +2,21 @@
 
 A classification implementation of [the project guidelines](knowledge-distillation-guidelines.md), built with PyTorch and torchvision. It includes supervised training, classical logits KD, Decoupled Knowledge Distillation (DKD), optional semantic-stage feature transfer, controlled ablations, and inference-cost reporting.
 
+[Experiment settings](docs/experiment-settings.md) consolidates the shared teacher,
+student, KD, and repair settings across all 13 datasets and four profiles. It also
+records additional baseline recipes, their configuration status, and separate
+architecture/loss follow-ups without repeating the common settings.
+
+[Teacher-training baselines and distillability](docs/teacher-training-baselines.md)
+adds an isolated, Consensus-researched benchmark for RandAugment, Mixup, CutMix,
+label smoothing, Balanced Softmax, raw/probability MSE, SAM, EMA, and a combined
+augmentation recipe. It compares teacher quality with matched downstream KD,
+includes the original channel-repair method using the common CE teacher,
+freezes validation selection before test access, and documents recent 2025–2026
+follow-up methods. Inspect a pilot with `python -m kd.teacher_baselines plan
+--config configs/teacher_baselines/cifar10_lt100.json --output
+runs/teacher-baselines-v2/cifar10-lt100 --dry-run`.
+
 **CIFAR-10 is supported**, with a full-data, repeated-seed study and a held-out test phase. See [the CIFAR-10 protocol](docs/cifar10.md). Generated results live in `runs/cifar10/report.json`; render `report.md` and figures with `python -m kd.reporting --study runs/cifar10` after the study completes.
 
 The [calibration-loss intervention](docs/calibration-intervention.md) adds an optional validation-driven MMCE penalty, with a separate matched-control study and resumable controller state. It is disabled by default.
