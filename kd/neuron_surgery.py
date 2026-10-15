@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import math
+from pathlib import Path
 from typing import Iterable
 
 import numpy as np
@@ -14,6 +15,7 @@ from torch.utils.data import DataLoader, Dataset, Subset, WeightedRandomSampler
 
 from .losses import LogitsKD
 from .models import CifarCNN, ModelOutput, ResNetAdapter, VisionModel
+from .repair_failure import RepairFailureRecorder
 from .runtime import (autocast_context, loader_performance_kwargs, make_grad_scaler,
                       move_images, move_labels, prepare_model, resolve_precision)
 
@@ -573,6 +575,46 @@ def _balanced_weights(indices: list[int], labels: np.ndarray) -> Tensor:
     return torch.tensor([1.0 / counts[label] for label in selected_labels], dtype=torch.double)
 
 
+class _RepairSamplerTrace:
+    """Record the existing sampler's draws without changing its RNG stream."""
+
+    def __init__(self, sampler, indices):
+        self.sampler = sampler
+        self.indices = list(indices)
+        self.start_epoch()
+
+    def start_epoch(self):
+        self.draws: list[int] = []
+        self.consumed = 0
+
+    def __iter__(self):
+        # WeightedRandomSampler already generates its whole epoch on first use.
+        self.draws = list(self.sampler)
+        self.consumed = 0
+        for index in self.draws:
+            self.consumed += 1
+            yield index
+
+    def __len__(self):
+        return len(self.sampler)
+
+    def state(self):
+        return {"generator_state": self.sampler.generator.get_state(),
+                "epoch_draws": list(self.draws), "consumed": self.consumed,
+                "dataset_indices": list(self.indices)}
+
+    def batch_indices(self, start):
+        return [self.indices[index] for index in self.draws[start:self.consumed]]
+
+
+def _repair_step_is_finite(candidate, optimizer):
+    """Check updated parameters/buffers and SGD momentum with one device sync."""
+    values = [value for value in candidate.state_dict().values() if value.is_floating_point()]
+    values.extend(value for state in optimizer.state.values() for value in state.values()
+                  if isinstance(value, Tensor) and value.is_floating_point())
+    return bool(torch.stack([torch.isfinite(value).all() for value in values]).all().cpu())
+
+
 def train_repair_candidate(candidate: VisionModel, anchor: VisionModel, dataset: Dataset,
                            labels: np.ndarray, target_indices: list[int],
                            preservation_indices: list[int], channels: list[dict],
@@ -585,8 +627,15 @@ def train_repair_candidate(candidate: VisionModel, anchor: VisionModel, dataset:
                            seed: int = 2026, precision: str = "auto",
                            channels_last: bool = True,
                            fail_fast: bool = True,
-                           full_finetune: bool = False) -> tuple[list[dict], dict]:
-    """Fine-tune only selected channel-connected weights under preservation losses."""
+                           full_finetune: bool = False,
+                           failure_dir: str | Path | None = None,
+                           failure_context: dict | None = None) -> tuple[list[dict], dict]:
+    """Repair selected weights, retaining diagnostic-only failing-step snapshots.
+
+    ``failure_dir`` enables CPU-cloned pre-step state plus exact batch/RNG capture.
+    It does not alter the objective, LR, momentum or gradient-clipping policy.
+    Snapshots are failed diagnostic artifacts, never valid resume checkpoints.
+    """
     if min(epochs, samples_per_epoch, batch_size) < 1:
         raise ValueError("Repair epochs, samples_per_epoch, and batch_size must be positive")
     labels = np.asarray(labels, dtype=np.int64)
@@ -609,71 +658,148 @@ def train_repair_candidate(candidate: VisionModel, anchor: VisionModel, dataset:
     preserve_sampler = WeightedRandomSampler(_balanced_weights(preservation_indices, labels), samples_per_epoch,
                                              replacement=True,
                                              generator=torch.Generator().manual_seed(seed + 1))
+    recorder = RepairFailureRecorder(failure_dir, context=failure_context) if failure_dir is not None else None
+    traces = ({"target": _RepairSamplerTrace(target_sampler, target_indices),
+               "preservation": _RepairSamplerTrace(preserve_sampler, preservation_indices)} if recorder else {})
     target_loader = DataLoader(Subset(dataset, target_indices), batch_size=batch_size,
-                               sampler=target_sampler, num_workers=0,
+                               sampler=traces.get("target", target_sampler), num_workers=0,
                                **loader_performance_kwargs(str(device), 0))
     preservation_loader = DataLoader(Subset(dataset, preservation_indices), batch_size=batch_size,
-                                     sampler=preserve_sampler, num_workers=0,
+                                     sampler=traces.get("preservation", preserve_sampler), num_workers=0,
                                      **loader_performance_kwargs(str(device), 0))
     history = []
-    with masked_parameters(candidate, masks) as parameters:
-        optimizer = torch.optim.SGD(
-            parameters, lr=learning_rate, momentum=momentum, weight_decay=0,
-            fused=device.type == "cuda" and not fail_fast)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-        scaler = make_grad_scaler(device, precision)
-        for epoch in range(epochs):
-            candidate.eval()
-            totals = {name: torch.zeros((), device=device) for name in
-                      ("total", "ce", "preservation_ce", "kd", "features")}
-            count = 0
-            for (target_images, target_labels), (preserve_images, preserve_labels) in zip(
-                    target_loader, preservation_loader):
-                target_images = move_images(target_images, device, channels_last)
-                target_labels = move_labels(target_labels, device)
-                preserve_images = move_images(preserve_images, device, channels_last)
-                preserve_labels = move_labels(preserve_labels, device)
-                optimizer.zero_grad(set_to_none=True)
-                with autocast_context(device, precision):
-                    target_output = candidate(target_images)
-                    preserve_output = candidate(preserve_images, return_features=bool(feature_weight))
-                    if kd_weight or feature_weight:
-                        with torch.no_grad():
-                            anchor_output = anchor(preserve_images, return_features=bool(feature_weight))
+    optimizer = scheduler = scaler = None
+    phase, global_step = "setup", 0
+    batches, outputs, losses, starts = {}, {}, {}, {}
+    settings = {"epochs": epochs, "samples_per_epoch": samples_per_epoch, "batch_size": batch_size,
+                "learning_rate": learning_rate, "momentum": momentum, "temperature": temperature,
+                "kd_weight": kd_weight, "feature_weight": feature_weight,
+                "preservation_ce_weight": preservation_ce_weight, "feature_stages": list(feature_stages),
+                "seed": seed, "precision": precision, "channels_last": channels_last,
+                "fail_fast": fail_fast, "full_finetune": full_finetune,
+                "channels": channels, "device": str(device)}
+    try:
+        with masked_parameters(candidate, masks) as parameters:
+            optimizer = torch.optim.SGD(
+                parameters, lr=learning_rate, momentum=momentum, weight_decay=0,
+                fused=device.type == "cuda" and not fail_fast)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+            scaler = make_grad_scaler(device, precision)
+            for epoch in range(epochs):
+                for trace in traces.values():
+                    trace.start_epoch()
+                candidate.eval()
+                totals = {name: torch.zeros((), device=device) for name in
+                          ("total", "ce", "preservation_ce", "kd", "features")}
+                count = 0
+                target_iterator = preserve_iterator = None
+                for step in range(len(target_loader)):
+                    global_step += 1
+                    batches, outputs, losses = {}, {}, {}
+                    settings["optimizer_step_returned"] = False
+                    starts = {name: trace.consumed for name, trace in traces.items()}
+                    phase = "pre_step_capture"
+                    if recorder:
+                        recorder.begin_step(candidate, optimizer, scheduler, scaler,
+                            epoch=epoch + 1, step=step + 1, global_step=global_step,
+                            samplers={name: trace.state() for name, trace in traces.items()})
+                    if step == 0:
+                        phase = "data_iterator"
+                        target_iterator, preserve_iterator = iter(target_loader), iter(preservation_loader)
+                    phase = "target_data"
+                    target_images, target_labels = next(target_iterator)
+                    if recorder:
+                        batches["target"] = {"images": target_images, "labels": target_labels,
+                                             "indices": traces["target"].batch_indices(starts["target"])}
+                    phase = "preservation_data"
+                    preserve_images, preserve_labels = next(preserve_iterator)
+                    if recorder:
+                        batches["preservation"] = {"images": preserve_images, "labels": preserve_labels,
+                            "indices": traces["preservation"].batch_indices(starts["preservation"])}
+                    phase = "batch_transfer"
+                    target_images = move_images(target_images, device, channels_last)
+                    target_labels = move_labels(target_labels, device)
+                    preserve_images = move_images(preserve_images, device, channels_last)
+                    preserve_labels = move_labels(preserve_labels, device)
+                    optimizer.zero_grad(set_to_none=True)
+                    if recorder:
+                        recorder.before_forward()
+                    with autocast_context(device, precision):
+                        phase = "forward_target"
+                        target_output = candidate(target_images)
+                        outputs["target"] = target_output
+                        phase = "forward_preservation"
+                        preserve_output = candidate(preserve_images, return_features=bool(feature_weight))
+                        outputs["preservation"] = preserve_output
+                        if kd_weight or feature_weight:
+                            phase = "forward_anchor"
+                            with torch.no_grad():
+                                anchor_output = anchor(preserve_images, return_features=bool(feature_weight))
+                        else:
+                            anchor_output = preserve_output
+                        outputs["anchor"] = anchor_output
+                        phase = "loss"
+                        losses = repair_loss(target_output, target_labels, preserve_output, anchor_output,
+                                             preserve_labels, temperature=temperature,
+                                             kd_weight=kd_weight, feature_weight=feature_weight,
+                                             preservation_ce_weight=preservation_ce_weight,
+                                             feature_stages=feature_stages)
+                    phase = "loss_validation"
+                    if (fail_fast or recorder) and not torch.isfinite(losses["total"]):
+                        raise FloatingPointError("Non-finite neuron-repair loss")
+                    phase = "backward"
+                    if scaler.is_enabled():
+                        # Preserve normal AMP skip/recovery behavior on overflow.
+                        scaler.scale(losses["total"]).backward()
+                        phase = "optimizer_step"
+                        scaler.step(optimizer)
+                        settings["optimizer_step_returned"] = True
+                        phase = "scaler_update"
+                        scaler.update()
                     else:
-                        anchor_output = preserve_output
-                    losses = repair_loss(target_output, target_labels, preserve_output, anchor_output,
-                                         preserve_labels, temperature=temperature,
-                                         kd_weight=kd_weight, feature_weight=feature_weight,
-                                         preservation_ce_weight=preservation_ce_weight,
-                                         feature_stages=feature_stages)
-                if fail_fast and not torch.isfinite(losses["total"]):
-                    raise FloatingPointError("Non-finite neuron-repair loss")
-                if scaler.is_enabled():
-                    scaler.scale(losses["total"]).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    losses["total"].backward()
-                    if fail_fast:
-                        nn.utils.clip_grad_norm_(parameters, float("inf"), error_if_nonfinite=True)
-                    optimizer.step()
-                count += target_labels.numel()
-                for name, value in losses.items():
-                    totals[name] += value.detach() * target_labels.numel()
-            finite = torch.stack([torch.isfinite(value) for value in totals.values()]).all()
-            parameter_finite = torch.stack([
-                torch.isfinite(parameter).all() for parameter in parameters]).all()
-            if not bool((finite & parameter_finite).cpu()):
-                raise FloatingPointError(f"Non-finite neuron-repair state at epoch {epoch + 1}")
-            history.append({"epoch": epoch + 1, "learning_rate": optimizer.param_groups[0]["lr"],
-                            **{name: value.item() / count for name, value in totals.items()},
-                            "precision": precision,
-                            "grad_scaler_enabled": scaler.is_enabled()})
-            scheduler.step()
-    candidate.requires_grad_(False).eval()
-    verification = assert_only_masked_changes(candidate, before, masks)
-    return history, verification
+                        losses["total"].backward()
+                        if fail_fast or recorder:
+                            phase = "gradient_validation"
+                            nn.utils.clip_grad_norm_(parameters, float("inf"), error_if_nonfinite=True)
+                        phase = "optimizer_step"
+                        optimizer.step()
+                        settings["optimizer_step_returned"] = True
+                    phase = "post_step_validation"
+                    if recorder and not _repair_step_is_finite(candidate, optimizer):
+                        raise FloatingPointError("Non-finite neuron-repair state after optimizer step")
+                    count += target_labels.numel()
+                    for name, value in losses.items():
+                        totals[name] += value.detach() * target_labels.numel()
+                phase = "epoch_validation"
+                finite = torch.stack([torch.isfinite(value) for value in totals.values()]).all()
+                parameter_finite = torch.stack([
+                    torch.isfinite(parameter).all() for parameter in parameters]).all()
+                if not bool((finite & parameter_finite).cpu()):
+                    raise FloatingPointError(f"Non-finite neuron-repair state at epoch {epoch + 1}")
+                history.append({"epoch": epoch + 1, "learning_rate": optimizer.param_groups[0]["lr"],
+                                **{name: value.item() / count for name, value in totals.items()},
+                                "precision": precision,
+                                "grad_scaler_enabled": scaler.is_enabled()})
+                phase = "scheduler_step"
+                scheduler.step()
+        candidate.requires_grad_(False).eval()
+        phase = "verification"
+        verification = assert_only_masked_changes(candidate, before, masks)
+        return history, verification
+    except Exception as error:
+        if recorder:
+            try:
+                for name, trace in traces.items():
+                    if trace.consumed > starts.get(name, trace.consumed):
+                        batches.setdefault(name, {})["indices"] = trace.batch_indices(starts[name])
+                recorder.save(error, phase=phase, candidate=candidate, anchor=anchor,
+                    optimizer=optimizer, scheduler=scheduler, scaler=scaler, losses=losses,
+                    batches=batches, outputs=outputs, history=history,
+                    samplers={name: trace.state() for name, trace in traces.items()},
+                    masks=masks, settings=settings)
+            except Exception as snapshot_error:
+                error.add_note(f"Repair failure snapshot could not be saved: {snapshot_error!r}")
+        raise
 
 
 def validate_repair_provenance(state: dict, *, base_checkpoint_sha256: str,

@@ -17,7 +17,7 @@ from .checkpoints import fingerprint
 BINDING_VERSION = 1
 STUDY_SOURCE_FILES = (
     "teacher_baselines.py", "teacher_training.py", "baseline_artifacts.py",
-    "teacher_repair_baseline.py", "neuron_surgery.py", "neuron_surgery_study.py",
+    "teacher_repair_baseline.py", "neuron_surgery.py", "neuron_surgery_study.py", "repair_failure.py",
     "engine.py", "data.py", "dataset_registry.py", "catalog/v1.json", "config.py",
     "losses.py", "models.py", "checkpoints.py", "evaluation.py", "metrics.py",
     "calibration.py", "calibration_metrics.py", "adaptive_focal.py", "cpc.py",

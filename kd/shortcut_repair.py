@@ -290,7 +290,12 @@ def train_shortcut_repair(spec, condition, config):
                     batch_size=options.repair_batch_size, learning_rate=lr, momentum=0.9,
                     temperature=4.0, kd_weight=1.0, feature_weight=0.25, seed=fit_seed,
                     precision=config.train.precision, channels_last=config.train.channels_last,
-                    full_finetune=condition == "repair_ce_continuation")
+                    full_finetune=condition == "repair_ce_continuation",
+                    failure_dir=trial_dir / "failures",
+                    failure_context={"condition": condition, "config": config.to_dict(),
+                        "trial_protocol": trial_protocol,
+                        "base_teacher_sha256": identity["base_teacher_sha256"],
+                        "base_completion_sha256": identity["base_completion_sha256"]})
                 quality = _validation(candidate, data, device, config)
                 outcome = {"budget": budget, "learning_rate": lr, "fit_seed": fit_seed,
                     "status": "eligible" if candidate_eligible(quality, baseline, policy) else "rejected",

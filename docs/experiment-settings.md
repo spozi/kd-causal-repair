@@ -356,6 +356,25 @@ A prespecified `5/10/20/40` sensitivity study remains optional future work:
 independent fits/schedules, validation-only selection, and explicit search cost.
 Test outcomes must not determine the repair budget.
 
+### 5.4. Failed-step diagnostics
+
+Both repair families record numerical/runtime fitting failures under each
+candidate's `failures/` directory. A unique attempt contains `failure.json`
+(phase, one-based epoch/batch/global-step, exception, component losses and tensor
+diagnostics) and a SHA-bound `state.pt` (pre-step and observed model/optimizer/
+scheduler/scaler state, frozen anchor, gradients, exact replay batches/indices,
+RNG and sampler state). These are diagnostic-only failed artifacts, never
+completed candidates, selected inference exports, or automatic resume inputs.
+
+Recording adds CPU-memory copies of pre-step state and per-step finite checks;
+it does not change losses, LR grids, momentum, masks or the infinite clipping
+limit, and normal AMP overflow-skip behavior is retained. Successful CPU fixture
+runs preserve exact weights, history, sample order and RNG. GPU bitwise replay
+is not guaranteed. The original exception is re-raised even if saving fails.
+See [snapshot format, limitations and inspection](repair-failure-snapshots.md).
+New source-bound protocols include the recorder; historical plans are not
+silently upgraded, and the deployed baseline-only run is not affected.
+
 ## 6. Teacher-training comparison arms
 
 ### 6.1. Shared recipe definitions

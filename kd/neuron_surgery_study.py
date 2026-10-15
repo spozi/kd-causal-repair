@@ -60,7 +60,7 @@ COMPUTE_SOURCES = (
     "checkpoints.py", "engine.py", "training_provenance.py", "surgery.py",
     "losses.py", "calibration.py", "adaptive_focal.py", "cpc.py", "models.py",
     "runtime.py", "metrics.py", "evaluation.py", "calibration_metrics.py",
-    "neuron_surgery.py", "neuron_surgery_study.py",
+    "neuron_surgery.py", "neuron_surgery_study.py", "repair_failure.py",
     "shortcut_data.py", "group_metrics.py",
 )
 
@@ -611,7 +611,12 @@ def _train_candidate(directory: Path, identity: dict, teacher_config, teacher_ch
         precision=teacher_config.train.precision,
         channels_last=teacher_config.train.channels_last,
         fail_fast=(device.type != "cuda"
-                   or teacher_config.train.cuda_mode == "deterministic"))
+                   or teacher_config.train.cuda_mode == "deterministic"),
+        failure_dir=directory / "failures",
+        failure_context={"candidate_identity": identity,
+            "base_checkpoint": str(teacher_checkpoint),
+            "base_checkpoint_sha256": fingerprint(teacher_checkpoint),
+            "localization_sha256": localization_sha256})
     validation = _validation_report(
         candidate, validation_loader, device, classes, target_classes,
         precision=teacher_config.train.precision,
