@@ -35,6 +35,8 @@ def evaluate(model: VisionModel, loader, device: torch.device, *, confidence_obs
     bins = torch.zeros(15, 3, dtype=torch.float64, device=bin_device)
     finite = torch.ones((), dtype=torch.bool, device=device)
     diagnostic_labels, diagnostic_probabilities = [], []
+    from .group_metrics import add_group_metrics, loader_groups
+    groups = loader_groups(loader)
     observer_confidence, observer_correct = [], []
     try:
         for images, labels in loader:
@@ -45,7 +47,7 @@ def evaluate(model: VisionModel, loader, device: torch.device, *, confidence_obs
             finite &= torch.isfinite(logits).all()
             log_prob = F.log_softmax(logits, dim=1)
             prob = log_prob.exp()
-            if extended:
+            if extended or groups is not None:
                 diagnostic_labels.append(labels.detach())
                 diagnostic_probabilities.append(prob.detach())
             confidence, predictions = prob.max(dim=1)
@@ -90,6 +92,9 @@ def evaluate(model: VisionModel, loader, device: torch.device, *, confidence_obs
         result["extended"] = extended_prediction_metrics(
             torch.cat(diagnostic_labels).cpu().numpy(),
             torch.cat(diagnostic_probabilities).cpu().numpy())
+    if groups is not None:
+        add_group_metrics(result, torch.cat(diagnostic_labels).cpu().numpy(),
+                          torch.cat(diagnostic_probabilities).cpu().numpy(), loader)
     return result
 
 

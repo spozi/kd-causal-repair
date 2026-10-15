@@ -29,6 +29,8 @@ from .models import create_model
 from .runtime import (autocast_context, configure_accelerator, make_grad_scaler,
                       move_images, move_labels, prepare_model, resolve_device,
                       resolve_precision, runtime_metadata)
+from .training_provenance import (bind_training_data, load_selected_checkpoint,
+                                  load_training_checkpoint)
 
 
 @dataclass(frozen=True)
@@ -143,7 +145,10 @@ def randaugment_policy(source):
     sensitive sources. They are conservative starting policies, not evidence of
     task-specific invariance or an optimized augmentation search.
     """
-    if source in {"svhn", "gtsrb"}:
+    if source == "colored_mnist":
+        name = "restricted_colored_digit_photometric"
+        operations = ("Identity", "Brightness", "Contrast", "Sharpness")
+    elif source in {"svhn", "gtsrb"}:
         name = "restricted_digit_sign_photometric"
         operations = ("Identity", "Brightness", "Contrast", "Sharpness", "AutoContrast", "Equalize")
     elif source in MEDMNIST_SOURCES:
@@ -245,7 +250,22 @@ def _validation(model, data, device, config):
     labels, probabilities = collect_predictions(
         model, data.val, device, precision=config.train.precision,
         channels_last=config.train.channels_last)
-    return prediction_metrics(labels, probabilities, data.classes)
+    from .group_metrics import add_group_metrics
+    return add_group_metrics(prediction_metrics(labels, probabilities, data.classes),
+                             labels, probabilities, data.val)
+
+
+def _validate_teacher_state(state, identity, recipe, *, initial_sha256=None, selected=False):
+    """Check saved recipe/initialization without applying model or optimizer state."""
+    kind = "inference" if selected else "teacher_baseline_training"
+    if state.get("kind") != kind or state.get("identity") != identity:
+        raise ValueError("Teacher checkpoint recipe, protocol, or initialization changed")
+    recorded_initial = state.get("initial_sha256")
+    if (not isinstance(recorded_initial, str) or len(recorded_initial) != 64
+            or (initial_sha256 is not None and recorded_initial != initial_sha256)):
+        raise ValueError("Teacher checkpoint initialization changed")
+    if selected and state.get("teacher_recipe") != asdict(recipe):
+        raise ValueError("Selected teacher checkpoint recipe changed")
 
 
 def train_teacher(config: ExperimentConfig, recipe: TeacherRecipe, *, selection_metric="accuracy"):
@@ -256,7 +276,7 @@ def train_teacher(config: ExperimentConfig, recipe: TeacherRecipe, *, selection_
         raise ValueError("Teacher baselines require supervised training")
     if config.train.persistent_workers:
         raise ValueError("Epoch-boundary teacher resume requires persistent_workers=false")
-    if selection_metric not in {"accuracy", "balanced_accuracy"}:
+    if selection_metric not in {"accuracy", "balanced_accuracy", "worst_group_accuracy"}:
         raise ValueError("Unknown teacher checkpoint selection metric")
     device = resolve_device(config.train.device)
     precision = resolve_precision(config.train.precision, device)
@@ -275,7 +295,8 @@ def train_teacher(config: ExperimentConfig, recipe: TeacherRecipe, *, selection_
                 "source_sha256": {name: fingerprint(Path(__file__).parent / name)
                                   for name in ("teacher_training.py", "baseline_artifacts.py", "config.py",
                                                "checkpoints.py", "engine.py", "evaluation.py", "data.py",
-                                               "models.py", "runtime.py")}}
+                                               "models.py", "runtime.py", "training_provenance.py",
+                                               "shortcut_data.py", "group_metrics.py")}}
     identity = json.loads(json.dumps(identity, allow_nan=False))
     config_path = directory / "teacher_protocol.json"
     if directory.exists() and any(directory.iterdir()):
@@ -284,10 +305,21 @@ def train_teacher(config: ExperimentConfig, recipe: TeacherRecipe, *, selection_
         if (directory / "completion.json").exists():
             verify_manifest(directory, "completion.json", TEACHER_FILES)
             return json.loads((directory / "summary.json").read_text())
-    directory.mkdir(parents=True, exist_ok=True)
-    write_json(config_path, identity)
-    write_json(directory / "config.json", config.to_dict())
     data = build_data(config.data, config.train, include_test=False)
+    training_data_identity = bind_training_data(data.provenance)
+    checkpoint_metadata = metadata(config.student.name, data.classes, config.data.image_size, config.data.source)
+    last = directory / "last.pt"
+    if last.is_symlink():
+        raise ValueError("Teacher resume requires a non-symlink committed last.pt selection anchor")
+    state = load_training_checkpoint(last, checkpoint_metadata, data.provenance) if last.exists() else None
+    selected_best_sha256 = None
+    if state is not None:
+        _validate_teacher_state(state, identity, recipe)
+        best = load_selected_checkpoint(directory / "best.pt", checkpoint_metadata, data.provenance, state)
+        _validate_teacher_state(best, identity, recipe, initial_sha256=state["initial_sha256"], selected=True)
+        selected_best_sha256 = state["selected_best_checkpoint_sha256"]
+    elif (directory / "best.pt").exists():
+        raise ValueError("Unsealed teacher best.pt has no committed last.pt selection anchor; use a fresh run")
     add_randaugment(data, config, recipe)
     counts = data.provenance.get("train_per_class")
     if counts is None:
@@ -298,8 +330,8 @@ def train_teacher(config: ExperimentConfig, recipe: TeacherRecipe, *, selection_
         for _, labels in diagnostic.train:
             for label, count in zip(*torch.unique(labels, return_counts=True)):
                 counts[int(label)] += int(count)
-    model = create_model(config.student.name, config.data.num_classes)
-    checkpoint_metadata = metadata(config.student.name, data.classes, config.data.image_size, config.data.source)
+    model = create_model(config.student.name, config.data.num_classes,
+                         **({"weights": config.student.weights} if config.student.weights else {}))
     if config.student.checkpoint:
         load_model_checkpoint(model, config.student.checkpoint, checkpoint_metadata)
     initial = tensor_state_fingerprint(model.state_dict())
@@ -311,20 +343,24 @@ def train_teacher(config: ExperimentConfig, recipe: TeacherRecipe, *, selection_
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.train.epochs)
     scaler = make_grad_scaler(device, precision)
     history, best_score, start_epoch = [], -1.0, 0
+    from .group_metrics import selection_key
+    best_selection = (-1.0, -1.0) if selection_metric == "worst_group_accuracy" else (-1.0,)
     loaders = {"train": data.train, "val": data.val}
     seed_everything(config.train.seed, deterministic=deterministic)
-    last = directory / "last.pt"
-    if last.exists():
-        state = load_model_checkpoint(model, last, checkpoint_metadata)
-        if state["identity"] != identity or state["initial_sha256"] != initial:
-            raise ValueError("Teacher resume identity or initialization changed")
+    if state is not None:
+        _validate_teacher_state(state, identity, recipe, initial_sha256=initial)
+        model.load_state_dict(state["student"], strict=True)
         optimizer.load_state_dict(state["optimizer"])
         scheduler.load_state_dict(state["scheduler"])
         scaler.load_state_dict(state["scaler"])
         if average is not None:
             average.load_state_dict(state["ema"])
         history, best_score, start_epoch = state["history"], state["best_score"], state["epoch"] + 1
+        best_selection = max(selection_key(row["validation"], selection_metric) for row in history)
         restore_rng(state["rng"], loaders)
+    directory.mkdir(parents=True, exist_ok=True)
+    write_json(config_path, identity)
+    write_json(directory / "config.json", config.to_dict())
     for epoch in range(start_epoch, config.train.epochs):
         model.train()
         total, count = 0.0, 0
@@ -357,20 +393,31 @@ def train_teacher(config: ExperimentConfig, recipe: TeacherRecipe, *, selection_
         history.append({"epoch": epoch + 1, "loss": total / count,
                         "seconds": time.perf_counter() - start, "validation": validation})
         scheduler.step()
-        if validation[selection_metric] > best_score:
-            best_score = validation[selection_metric]
+        candidate_selection = selection_key(validation, selection_metric)
+        if candidate_selection > best_selection:
+            best_selection = candidate_selection
+            best_score = candidate_selection[0]
             selected = average if average is not None else model
             save_checkpoint(directory / "best.pt", {**checkpoint_metadata, "kind": "inference",
-                "epoch": epoch, "student": selected.state_dict(), "teacher_recipe": asdict(recipe)})
+                "epoch": epoch, "student": selected.state_dict(), "teacher_recipe": asdict(recipe),
+                "identity": identity, "initial_sha256": initial,
+                "training_data_identity": training_data_identity})
+            selected_best_sha256 = fingerprint(directory / "best.pt")
         save_checkpoint(last, {**checkpoint_metadata, "kind": "teacher_baseline_training", "epoch": epoch,
             "student": model.state_dict(), "ema": average.state_dict() if average is not None else None,
             "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(), "rng": capture_rng(loaders), "history": history,
-            "best_score": best_score, "identity": identity, "initial_sha256": initial})
+            "best_score": best_score, "identity": identity, "initial_sha256": initial,
+            "training_data_identity": training_data_identity,
+            "selected_best_checkpoint_sha256": selected_best_sha256})
         write_json(directory / "history.json", history)
         print(f"{config.name} epoch={epoch + 1}/{config.train.epochs} loss={total / count:.5f} "
               f"val_{selection_metric}={validation[selection_metric]:.4f}", flush=True)
-    best = load_model_checkpoint(model, directory / "best.pt", checkpoint_metadata)
+    anchor = load_training_checkpoint(last, checkpoint_metadata, data.provenance)
+    _validate_teacher_state(anchor, identity, recipe, initial_sha256=initial)
+    best = load_selected_checkpoint(directory / "best.pt", checkpoint_metadata, data.provenance, anchor)
+    _validate_teacher_state(best, identity, recipe, initial_sha256=initial, selected=True)
+    model.load_state_dict(best["student"], strict=True)
     best["student"] = {name: value.cpu() for name, value in model.state_dict().items()}
     save_checkpoint(directory / "student.pt", best)
     summary = {"checkpoint": str(directory / "student.pt"), "checkpoint_sha256": fingerprint(directory / "student.pt"),
@@ -383,6 +430,8 @@ def train_teacher(config: ExperimentConfig, recipe: TeacherRecipe, *, selection_
                "synthetic_smoke_only": config.data.source == "synthetic",
                "runtime": runtime_metadata(device, config.train.precision, config.train.cuda_mode,
                                            config.train.channels_last)}
+    if config.student.weights is not None:
+        summary["initialization"] = model.initialization
     write_json(directory / "summary.json", summary)
     write_manifest(directory, "completion.json", TEACHER_FILES)
     return summary

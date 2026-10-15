@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -6,6 +7,7 @@ import torch
 
 from kd.checkpoints import load_model_checkpoint, metadata, save_checkpoint
 from kd.models import MODEL_NAMES, canonical_model_name, create_model
+from kd.neuron_surgery_study import NeuronSurgerySpec, _configured_stages
 
 
 ALIASES = {
@@ -99,6 +101,21 @@ class ModelAliasTests(unittest.TestCase):
                 self.assertEqual(str(factory_error.exception), str(canonical_error.exception))
                 self.assertIn(repr(name), str(factory_error.exception))
                 self.assertIn("choose from", str(factory_error.exception))
+
+    def test_direct_repair_stage_routing_accepts_neutral_and_legacy_ids(self):
+        base = NeuronSurgerySpec()
+        for alias, legacy in ALIASES.items():
+            expected = (("stage2", "stage3") if alias.startswith("convnet6")
+                        else ("stage3", "stage4"))
+            for name in (alias, legacy):
+                with self.subTest(name=name):
+                    self.assertEqual(_configured_stages(replace(base, teacher_model=name)), expected)
+        for name in ("resnet18", "resnet34", "resnet50"):
+            self.assertEqual(_configured_stages(replace(base, teacher_model=name)), ("stage3", "stage4"))
+        # Explicit legacy/campaign stage overrides keep their original meaning.
+        self.assertEqual(_configured_stages(replace(base, stages=("stage3",))), ("stage3",))
+        with self.assertRaisesRegex(ValueError, "ConvNet-6 or a supported ResNet"):
+            _configured_stages(replace(base, teacher_model="resnet20"))
 
     def test_trained_alias_and_legacy_checkpoints_roundtrip_without_renaming(self):
         with tempfile.TemporaryDirectory() as directory, torch.random.fork_rng(devices=[]):

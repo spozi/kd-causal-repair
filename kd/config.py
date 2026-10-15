@@ -32,12 +32,15 @@ class DataConfig:
     # legacy imbalance_factor field; LT profiles are deterministic aliases.
     dataset_version: str | None = None
     dataset_profile: str = "balanced"
+    # Only used by the shortcut adapters; omitted from legacy serialization.
+    test_environment: str | None = None
 
 
 @dataclass(frozen=True)
 class ModelConfig:
     name: str = "tiny_small"
     checkpoint: str | None = None
+    weights: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,7 @@ class TrainConfig:
     channels_last: bool = True
     persistent_workers: bool = False
     prefetch_factor: int = 2
+    selection_metric: str = "accuracy"
 
 
 @dataclass(frozen=True)
@@ -180,7 +184,8 @@ class ExperimentConfig:
             raise ValueError("name must be a single directory name")
         sources = {"synthetic", "imagefolder", "cifar10", "cifar100", "svhn", "cinic10",
                    "gtsrb", "fashionmnist", "pathmnist", "bloodmnist", "dermamnist",
-                   "organamnist", "caltech101", "eurosat", "stl10"}
+                   "organamnist", "caltech101", "eurosat", "stl10",
+                   "colored_mnist", "waterbirds", "urbancars"}
         if self.data.source not in sources:
             raise ValueError(f"data.source must be one of {sorted(sources)}")
         requirements = {"cifar10": (10, 32), "cifar100": (100, 32),
@@ -196,9 +201,34 @@ class ExperimentConfig:
                     raise ValueError("CIFAR-10 requires num_classes=10 and image_size=32")
                 raise ValueError(f"{self.data.source} requires num_classes={classes}"
                                  + (f" and image_size={size}" if size is not None else ""))
-        profiles = {"balanced": 1.0, "lt-if10": 10.0, "lt-if50": 50.0, "lt-if100": 100.0}
+        shortcut_sizes = {"colored_mnist": 32, "waterbirds": 224, "urbancars": 256}
+        if self.data.source in shortcut_sizes:
+            if (self.data.num_classes != 2 or self.data.image_size != shortcut_sizes[self.data.source]
+                    or self.data.dataset_profile not in {"balanced", "native-shortcut"} or self.data.imbalance_factor != 1
+                    or self.data.confirmation_fraction):
+                raise ValueError("Shortcut datasets require two classes, native resolution, and no IF/confirmation sampling")
+            if self.data.augmentation != "basic":
+                raise ValueError("Shortcut base views must use the frozen basic policy; teacher recipes supply extra interventions")
+            if self.data.dataset_version not in {None, "1.0"}:
+                raise ValueError("Unknown shortcut adapter version; supported version is 1.0")
+        if self.data.test_environment is not None:
+            if self.data.source != "colored_mnist" or self.data.test_environment not in {"reversed", "unbiased"}:
+                raise ValueError("test_environment is reversed/unbiased for Colored MNIST only")
+        if self.train.selection_metric not in {"accuracy", "worst_group_accuracy"}:
+            raise ValueError("train.selection_metric must be accuracy or worst_group_accuracy")
+        if self.train.selection_metric == "worst_group_accuracy" and self.data.source not in shortcut_sizes:
+            raise ValueError("Worst-group selection requires a shortcut dataset")
+        for model in (self.student, self.teacher):
+            if model.weights is not None:
+                if model.weights != "IMAGENET1K_V1" or model.name not in {"resnet18", "resnet34", "resnet50"}:
+                    raise ValueError("Named pretrained weights require an ordinary-stem ResNet and IMAGENET1K_V1")
+                if model.checkpoint:
+                    raise ValueError("Use checkpoint or pretrained weights for initialization, not both")
+        profiles = {"balanced": 1.0, "lt-if10": 10.0, "lt-if50": 50.0, "lt-if100": 100.0, "native-shortcut": 1.0}
         if self.data.dataset_profile not in profiles:
             raise ValueError(f"data.dataset_profile must be one of {sorted(profiles)}")
+        if self.data.dataset_profile == "native-shortcut" and self.data.source not in shortcut_sizes:
+            raise ValueError("native-shortcut profiles require a shortcut dataset")
         if self.data.dataset_profile != "balanced" and self.data.imbalance_factor != 1:
             raise ValueError("Set either dataset_profile or imbalance_factor, not both")
         if self.data.dataset_version is not None:
@@ -303,6 +333,13 @@ class ExperimentConfig:
             value["data"].pop("dataset_version")
         if self.data.dataset_profile == "balanced":
             value["data"].pop("dataset_profile")
+        if self.data.test_environment is None:
+            value["data"].pop("test_environment")
+        for role in ("student", "teacher"):
+            if getattr(self, role).weights is None:
+                value[role].pop("weights")
+        if self.train.selection_metric == "accuracy":
+            value["train"].pop("selection_metric")
         return value
 
 

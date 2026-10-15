@@ -1,6 +1,7 @@
 """Offline validation of the all-dataset baseline matrix planner."""
 
 import contextlib
+from dataclasses import replace
 import io
 import json
 from pathlib import Path
@@ -9,9 +10,10 @@ import unittest
 from unittest.mock import patch
 
 from kd.neuron_surgery_matrix import DATASETS, PROFILES
-from kd.teacher_baselines import load_spec, plan_study
-from kd.teacher_baseline_matrix import (PAIRINGS, main, materialize_matrix_plan,
+from kd.teacher_baselines import load_spec, main as study_main, plan_study, run_study, study_configs
+from kd.teacher_baseline_matrix import (DEFAULT_EPOCHS, PAIRINGS, main, materialize_matrix_plan,
                                         matrix_jobs, plan_matrix)
+from kd.matrix_binding import (MATRIX_SOURCE_FILES, STUDY_SOURCE_FILES, matrix_payload_digest)
 from kd.teacher_training import RECIPES
 
 
@@ -19,7 +21,7 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
     def test_all_52_specs_roundtrip_and_follow_main_dataset_policy(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            jobs = matrix_jobs(root=root / "data")
+            jobs = matrix_jobs(datasets=tuple(DATASETS), root=root / "data")
             self.assertEqual(len(jobs), 52)
             self.assertEqual(len({job["id"] for job in jobs}), 52)
             self.assertEqual({job["dataset"] for job in jobs}, set(DATASETS))
@@ -41,7 +43,7 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
                     self.assertEqual(data.validation_fraction, 0.1)
                     self.assertEqual(data.confirmation_fraction, 0)
                     self.assertEqual(data.split_seed, 2026)
-                    self.assertEqual(train.epochs, PROFILES[job["profile"]]["epochs"])
+                    self.assertEqual(train.epochs, DEFAULT_EPOCHS)
                     self.assertEqual(train.workers, 0)
                     self.assertEqual(train.precision, "float32")
                     self.assertEqual(train.device, "auto")
@@ -62,7 +64,7 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
                     self.assertEqual(plan["repair_protocols"][0]["stages"], ["stage2", "stage3"])
 
     def test_optional_two_pairings_have_104_valid_settings(self):
-        jobs = matrix_jobs(pairs=tuple(PAIRINGS))
+        jobs = matrix_jobs(datasets=tuple(DATASETS), pairs=tuple(PAIRINGS))
         self.assertEqual(len(jobs), 104)
         self.assertEqual(len({job["id"] for job in jobs}), 104)
         with tempfile.TemporaryDirectory() as temporary:
@@ -88,14 +90,14 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
 
     def test_aggregate_fit_counts_are_upper_bounds_not_job_counts(self):
         with tempfile.TemporaryDirectory() as temporary:
-            plan = plan_matrix(Path(temporary) / "plan")
+            plan = plan_matrix(Path(temporary) / "plan", datasets=tuple(DATASETS))
             self.assertEqual(plan["job_count"], 52)
             self.assertEqual(plan["counts"], {
                 "teacher_conditions": 622, "teacher_training_fits": 570,
                 "repair_candidate_fits_max": 312, "kd_student_fits_max": 1866,
                 "supervised_student_fits": 156, "total_fits_max": 2904})
             self.assertIn("upper bounds", plan["counts_note"])
-            doubled = plan_matrix(Path(temporary) / "two-pairs", pairs=tuple(PAIRINGS))
+            doubled = plan_matrix(Path(temporary) / "two-pairs", datasets=tuple(DATASETS), pairs=tuple(PAIRINGS))
             self.assertEqual(doubled["job_count"], 104)
             self.assertEqual(doubled["counts"], {key: value * 2 for key, value in plan["counts"].items()})
 
@@ -202,6 +204,8 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
                    {"datasets": ("cifar10", "cifar10")}, {"pairs": ("convnet6", "convnet6")},
                    {"teacher_seeds": ()}, {"student_seeds": ()}, {"student_seeds": (42, 42)},
                    {"teacher_seeds": (True,)}, {"teacher_seeds": (-1,)}, {"workers": True},
+                   {"epochs": True}, {"epochs": 0}, {"epochs": -1}, {"epochs": 1.5},
+                   {"epochs": "100"}, {"epochs": None},
                    {"workers": -1}, {"device": "cuda:bad"}, {"precision": "fp32"},
                    {"precision": "float16", "device": "cuda:0"},
                    {"root": ""}, {"root": "data\nother"}, {"root": "data\x7fother"}, {"root": None})
@@ -294,7 +298,10 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
                     self.assertEqual(set(policies), {"randaugment", "randaugment_cutmix_ema"})
                     self.assertEqual(policies["randaugment"], policies["randaugment_cutmix_ema"])
                     policy = policies["randaugment"]
-                    if job["dataset"] in {"svhn", "gtsrb"}:
+                    if job["dataset"] == "colored_mnist":
+                        self.assertEqual(policy["name"], "restricted_colored_digit_photometric")
+                        self.assertEqual(policy["operations"], ["Identity", "Brightness", "Contrast", "Sharpness"])
+                    elif job["dataset"] in {"svhn", "gtsrb"}:
                         self.assertEqual(policy["name"], "restricted_digit_sign_photometric")
                         self.assertEqual(policy["operations"],
                                          ["Identity", "Brightness", "Contrast", "Sharpness", "AutoContrast", "Equalize"])
@@ -324,6 +331,173 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
             self.assertEqual(job["counts"]["repair_candidate_fits_max"], 12)
             self.assertEqual(job["counts"]["kd_students"], 48)
             self.assertEqual(job["counts"]["total_fits_max"], 84)
+
+    def test_uniform_epoch_budget_is_explicit_without_changing_historical_profiles(self):
+        self.assertEqual({name: value["epochs"] for name, value in PROFILES.items()},
+                         {"balanced": 81, "lt-if10": 49, "lt-if50": 71, "lt-if100": 81})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan = plan_matrix(root / "plan", pairs=tuple(PAIRINGS), epochs=120)
+            self.assertEqual(plan["version"], 2)
+            self.assertEqual(plan["epoch_policy"], {
+                "teacher_student_epochs": 120,
+                "scope": "uniform across all selected datasets, profiles and architecture pairs",
+                "historical_profile_epochs_unchanged": True, "repair_epochs": 20})
+            self.assertEqual({job["study"]["teacher"]["train"]["epochs"] for job in plan["jobs"]}, {120})
+            materialize_matrix_plan(root / "one", datasets=("cifar10",), profiles=("balanced",),
+                                    root=root / "data", epochs=120)
+            spec = load_spec(root / "one/configs/cifar10-balanced-convnet6.json")
+            teachers, students, supervised = study_configs(spec, spec.teacher.output_dir)
+            self.assertEqual({config.train.epochs for config in
+                              [*(row[1] for row in teachers), *(row[2] for row in students), *supervised]}, {120})
+            self.assertEqual(spec.repair.repair_epochs, 20)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                main(["plan", "--output", str(root / "cli"), "--datasets", "svhn",
+                      "--profiles", "lt-if10", "--epochs", "120", "--dry-run"])
+            self.assertEqual(json.loads(stdout.getvalue())["epoch_policy"]["teacher_student_epochs"], 120)
+            self.assertFalse((root / "cli").exists())
+
+    def test_generated_execution_binding_covers_parent_config_sources_and_queue(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            materialize_matrix_plan(root / "plan", datasets=("svhn",), profiles=("balanced",),
+                                    root=root / "data")
+            protocol = json.loads((root / "plan/protocol.json").read_text())
+            job = protocol["jobs"][0]
+            binding = job["study"]["matrix_binding"]
+            self.assertEqual(binding["parent_payload_sha256"], matrix_payload_digest(protocol))
+            self.assertEqual(set(protocol["source_sha256"]), set(STUDY_SOURCE_FILES + MATRIX_SOURCE_FILES))
+            spec = load_spec(job["config"])
+            snapshot = {str(path): (path.read_bytes(), path.stat().st_mtime_ns)
+                        for path in root.rglob("*") if path.is_file()}
+            for phase in ("plan", "train", "evaluate"):
+                with self.subTest(phase=phase):
+                    report = run_study(spec, job["output"], phase=phase, dry_run=True)
+                    self.assertTrue(report["dry_run"])
+            self.assertEqual(snapshot, {str(path): (path.read_bytes(), path.stat().st_mtime_ns)
+                                       for path in root.rglob("*") if path.is_file()})
+            self.assertFalse(Path(job["output"]).exists())
+
+    def test_execution_binding_rejects_config_and_in_memory_spec_changes_before_writes(self):
+        for mutation in ("recipe", "epochs", "model", "root", "output"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                materialize_matrix_plan(root / "plan", datasets=("svhn",), profiles=("balanced",),
+                                        root=root / "data")
+                config = root / "plan/configs/svhn-balanced-convnet6.json"
+                spec = load_spec(config)
+                raw = spec.to_dict()
+                if mutation == "recipe":
+                    modified = replace(spec, recipes=("control",), repair=None)
+                    raw["recipes"], raw["repair"] = ["control"], None
+                elif mutation == "epochs":
+                    modified = replace(spec, teacher=replace(spec.teacher,
+                        train=replace(spec.teacher.train, epochs=3)))
+                    raw["teacher"]["train"]["epochs"] = 3
+                elif mutation == "model":
+                    modified = replace(spec, student_model="resnet18_smallstem")
+                    raw["student_model"] = "resnet18_smallstem"
+                elif mutation == "root":
+                    modified = replace(spec, teacher=replace(spec.teacher,
+                        data=replace(spec.teacher.data, root=str(root / "other-data"))))
+                    raw["teacher"]["data"]["root"] = str(root / "other-data")
+                else:
+                    modified = replace(spec, teacher=replace(spec.teacher, output_dir=str(root / "other-output")))
+                    raw["teacher"]["output_dir"] = str(root / "other-output")
+                with patch("kd.teacher_baselines.build_data", side_effect=AssertionError("dataset access")), \
+                        patch("kd.teacher_baselines.resolve_device", side_effect=AssertionError("device access")):
+                    for phase in ("train", "evaluate"):
+                        with self.assertRaisesRegex(ValueError, "binding"):
+                            run_study(modified, spec.teacher.output_dir, phase=phase)
+                    config.write_text(json.dumps(raw))
+                    with self.assertRaisesRegex(ValueError, "binding"):
+                        load_spec(config)
+                self.assertFalse(Path(spec.teacher.output_dir).exists())
+                self.assertFalse((root / "data").exists())
+                self.assertFalse((root / "other-output").exists())
+
+    def test_execution_binding_rejects_parent_source_queue_and_source_coverage_changes(self):
+        for mutation in ("parent", "missing-parent", "source", "missing-source", "extra-source", "queue"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                materialize_matrix_plan(root / "plan", datasets=("svhn",), profiles=("balanced",),
+                                        root=root / "data")
+                config = root / "plan/configs/svhn-balanced-convnet6.json"
+                spec = load_spec(config)
+                protocol_path = root / "plan/protocol.json"
+                protocol = json.loads(protocol_path.read_text())
+                if mutation == "parent":
+                    protocol["epoch_policy"]["teacher_student_epochs"] = 999
+                    protocol_path.write_text(json.dumps(protocol))
+                elif mutation == "missing-parent":
+                    protocol_path.unlink()
+                elif mutation in {"missing-source", "extra-source"}:
+                    if mutation == "missing-source":
+                        del protocol["source_sha256"]["engine.py"]
+                    else:
+                        protocol["source_sha256"]["unexpected.py"] = "0" * 64
+                    # Even a consistent re-digest cannot make incomplete source
+                    # coverage acceptable to the current execution guard.
+                    binding = protocol["jobs"][0]["study"]["matrix_binding"]
+                    binding["parent_payload_sha256"] = matrix_payload_digest(protocol)
+                    protocol_path.write_text(json.dumps(protocol))
+                    config.write_text(json.dumps(protocol["jobs"][0]["study"]))
+                    spec = replace(spec, matrix_binding=binding)
+                elif mutation == "queue":
+                    (root / "plan/jobs.tsv").write_text("changed queue\n")
+                source_patch = (patch("kd.matrix_binding.fingerprint", return_value="changed-source")
+                                if mutation == "source" else contextlib.nullcontext())
+                with source_patch, patch("kd.teacher_baselines.build_data", side_effect=AssertionError("dataset access")):
+                    with self.assertRaisesRegex(ValueError, "binding"):
+                        load_spec(config)
+                    for phase in ("train", "evaluate"):
+                        with self.assertRaisesRegex(ValueError, "binding"):
+                            run_study(spec, spec.teacher.output_dir, phase=phase)
+                self.assertFalse(Path(spec.teacher.output_dir).exists())
+                self.assertFalse((root / "data").exists())
+
+    def test_cli_output_and_recipe_overrides_and_relocated_config_fail_before_writes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            materialize_matrix_plan(root / "plan", datasets=("svhn",), profiles=("balanced",),
+                                    root=root / "data")
+            config = root / "plan/configs/svhn-balanced-convnet6.json"
+            spec = load_spec(config)
+            for phase in ("train", "evaluate"):
+                for overrides in (["--output", str(root / "other-output")],
+                                  ["--output", spec.teacher.output_dir, "--recipes", "control"],
+                                  ["--output", spec.teacher.output_dir, "--device", "cpu"]):
+                    with self.subTest(phase=phase, overrides=overrides), \
+                            patch("kd.teacher_baselines.build_data", side_effect=AssertionError("dataset access")), \
+                            self.assertRaisesRegex(ValueError, "binding"):
+                        study_main([phase, "--config", str(config), *overrides])
+            copy = root / "copied-bound.json"
+            copy.write_bytes(config.read_bytes())
+            with self.assertRaisesRegex(ValueError, "config path"):
+                load_spec(copy)
+            self.assertFalse((root / "other-output").exists())
+            self.assertFalse(Path(spec.teacher.output_dir).exists())
+
+    def test_unbound_legacy_and_stripped_generated_configs_require_a_fresh_plan(self):
+        for version in (1, 2):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                materialize_matrix_plan(root / "plan", datasets=("svhn",), profiles=("balanced",),
+                                        root=root / "data")
+                config = root / "plan/configs/svhn-balanced-convnet6.json"
+                raw = json.loads(config.read_text())
+                del raw["matrix_binding"]
+                config.write_text(json.dumps(raw))
+                parent = root / "plan/protocol.json"
+                protocol = json.loads(parent.read_text())
+                protocol["version"] = version
+                parent.write_text(json.dumps(protocol))
+                with self.assertRaisesRegex(ValueError, "fresh matrix plan"):
+                    load_spec(config)
+                standalone = root / "explicit-standalone.json"
+                standalone.write_text(json.dumps(raw))
+                self.assertIsNone(load_spec(standalone).matrix_binding)
 
 
 if __name__ == "__main__":

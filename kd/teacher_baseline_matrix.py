@@ -9,26 +9,56 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
-import hashlib
 import json
 from pathlib import Path
 
 from .checkpoints import fingerprint
-from .config import from_dict
+from .config import (BenchmarkConfig, DataConfig, DistillationConfig, ExperimentConfig,
+                     ModelConfig, TrainConfig, from_dict)
+from .matrix_binding import (BINDING_VERSION, MATRIX_SOURCE_FILES, canonical_digest,
+                             matrix_payload_digest)
 from .neuron_surgery_baselines import baseline_configs
-from .neuron_surgery_matrix import DATASETS, PROFILES, matrix_spec
+from .neuron_surgery_matrix import DATASETS as CLASS_DATASETS, PROFILES, matrix_spec
+from .shortcut_data import SHORTCUT_DATASETS
+from .shortcut_baselines import DEFAULT_GROUP_POLICY
 from .runtime import PRECISIONS, valid_device_spec
 from .teacher_baselines import TeacherBaselineSpec, plan_study
 from .teacher_repair_baseline import REPAIR_NAME, TeacherRepairOptions, repair_options
 from .teacher_training import RECIPES
 
 
-MATRIX_VERSION = 1
+MATRIX_VERSION = 2
+DEFAULT_EPOCHS = 100
 PAIRINGS = {
     "convnet6": {"teacher": "convnet6_w32", "student": "convnet6_w16"},
     "resnet34_resnet18": {"teacher": "resnet34_smallstem", "student": "resnet18_smallstem"},
 }
 DEFAULT_PAIRS = ("convnet6",)
+DATASETS = {**CLASS_DATASETS, **SHORTCUT_DATASETS}
+
+
+def _shortcut_job(dataset, *, root, device, precision, workers, epochs, teacher_seeds, student_seeds):
+    info = SHORTCUT_DATASETS[dataset]
+    small = dataset == "colored_mnist"
+    teacher_model, student_model = (("convnet6_w32", "convnet6_w16") if small else ("resnet34", "resnet18"))
+    weights = None if small else "IMAGENET1K_V1"
+    teacher = ExperimentConfig(name="teacher", output_dir="runs/teacher-baselines-v5",
+        data=DataConfig(source=dataset, root=str(root), num_classes=2, image_size=info["image_size"],
+                        dataset_version=info["version"], dataset_profile="native-shortcut",
+                        horizontal_flip=dataset == "urbancars"),
+        student=ModelConfig(teacher_model, weights=weights), distillation=DistillationConfig(method="supervised"),
+        train=TrainConfig(epochs=epochs, batch_size=128 if small else 32,
+            learning_rate=0.05 if small else 0.001, momentum=0.9, weight_decay=0.0005,
+            workers=workers, seed=teacher_seeds[0], device=device, precision=precision, threads=4,
+            selection_metric="worst_group_accuracy"), benchmark=BenchmarkConfig(warmup=20, iterations=100))
+    spec = TeacherBaselineSpec(teacher=teacher, student_model=student_model, student_weights=weights,
+        teacher_seeds=teacher_seeds, student_seeds=student_seeds, recipes=(*RECIPES, REPAIR_NAME),
+        teacher_selection_metric="worst_group_accuracy", student_selection_metric="worst_group_accuracy",
+        repair=TeacherRepairOptions(repair_batch_size=64 if small else 16), group_policy=dict(DEFAULT_GROUP_POLICY))
+    spec.validate()
+    pair = "convnet6" if small else "resnet34_resnet18_imagenet"
+    return {"id": f"{dataset}-native-shortcut-{pair}", "dataset": dataset, "version": info["version"],
+            "profile": "native-shortcut", "pair": pair, "evaluation_family": "shortcut", "study": spec.to_dict()}
 
 
 def _selection(values, choices, label):
@@ -57,17 +87,17 @@ def _overlap(first, second):
 
 
 def _spec_digest(value):
-    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    return canonical_digest(value)
 
 
 def matrix_jobs(datasets=None, profiles=None, pairs=None, *, root="data", device="auto",
-                precision="float32", workers=0, teacher_seeds=(41,), student_seeds=(42, 43, 44)):
+                precision="float32", workers=0, epochs=DEFAULT_EPOCHS,
+                teacher_seeds=(41,), student_seeds=(42, 43, 44)):
     """Return validated dataset/profile/pair settings, without dataset access.
 
-    Dataset sizes, flip policy, split identity and profile epoch budgets come from
-    the main project's existing matrix and baseline config builders. Workers and
-    precision are deliberately overridden to the explicit benchmark settings.
+    Dataset sizes, flip policy and split identity come from the historical main
+    matrix. New teacher/student runs explicitly override its profile-dependent
+    epoch budgets with one common budget; repair retains its separate budget.
     """
     datasets = _selection(datasets, DATASETS, "datasets")
     profiles = _selection(profiles, PROFILES, "profiles")
@@ -81,6 +111,8 @@ def matrix_jobs(datasets=None, profiles=None, pairs=None, *, root="data", device
         raise ValueError(f"precision must be one of {PRECISIONS}")
     if not isinstance(workers, int) or isinstance(workers, bool) or workers < 0:
         raise ValueError("workers must be a nonnegative integer")
+    if not isinstance(epochs, int) or isinstance(epochs, bool) or epochs < 1:
+        raise ValueError("epochs must be a positive integer")
     teacher_seeds, student_seeds = tuple(teacher_seeds), tuple(student_seeds)
     # Validate seeds before indexing teacher_seeds below.
     for seeds in (teacher_seeds, student_seeds):
@@ -90,6 +122,10 @@ def matrix_jobs(datasets=None, profiles=None, pairs=None, *, root="data", device
 
     jobs = []
     for dataset in datasets:
+        if dataset in SHORTCUT_DATASETS:
+            jobs.append(_shortcut_job(dataset, root=root, device=device, precision=precision,
+                workers=workers, epochs=epochs, teacher_seeds=teacher_seeds, student_seeds=student_seeds))
+            continue
         for profile in profiles:
             for pair in pairs:
                 models = PAIRINGS[pair]
@@ -100,7 +136,8 @@ def matrix_jobs(datasets=None, profiles=None, pairs=None, *, root="data", device
                 # actual study output for every teacher/student run.
                 teacher, _ = baseline_configs("runs/teacher-baselines-v3", root, device, original)
                 teacher = replace(teacher, name="teacher",
-                                  train=replace(teacher.train, workers=workers, precision=precision))
+                                  train=replace(teacher.train, workers=workers, precision=precision,
+                                                epochs=epochs))
                 recipes = tuple(RECIPES)
                 # These two balanced training splits have exactly equal counts,
                 # so Balanced Softmax would duplicate the CE control. Other
@@ -146,7 +183,7 @@ def plan_matrix(output, datasets=None, profiles=None, pairs=None, *, run_root=No
             **{**study, "teacher": from_dict(study["teacher"]),
                "teacher_seeds": tuple(study["teacher_seeds"]),
                "student_seeds": tuple(study["student_seeds"]), "recipes": tuple(study["recipes"]),
-               "repair": repair_options(study["repair"])})
+               "repair": repair_options(study["repair"]) if study["repair"] is not None else None})
         study_output = (run_root / job["pair"] / job["dataset"] / job["profile"]).resolve()
         if (not study_output.is_relative_to(run_root) or _overlap(study_output, data_root)
                 or _overlap(study_output, output) or study_output in study_paths):
@@ -176,10 +213,9 @@ def plan_matrix(output, datasets=None, profiles=None, pairs=None, *, run_root=No
                                ("supervised_student_fits", "supervised_students"),
                                ("total_fits_max", "total_fits_max")):
             totals[aggregate] += counts[key]
-    sources = {**sources, **{name: fingerprint(Path(__file__).parent / name) for name in
-                            ("teacher_baseline_matrix.py", "neuron_surgery_matrix.py",
-                             "neuron_surgery_baselines.py")}}
-    return _json({"version": MATRIX_VERSION,
+    sources = {**sources, **{name: fingerprint(Path(__file__).parent / name)
+                            for name in MATRIX_SOURCE_FILES}}
+    protocol = _json({"version": MATRIX_VERSION,
                   "purpose": "All-dataset teacher performance and downstream distillability benchmark",
                   "datasets": list(dict.fromkeys(job["dataset"] for job in jobs)),
                   "profiles": list(dict.fromkeys(job["profile"] for job in jobs)),
@@ -188,7 +224,18 @@ def plan_matrix(output, datasets=None, profiles=None, pairs=None, *, run_root=No
                   "counts": totals,
                   "counts_note": "Jobs count dataset/profile/pair settings, not training fits. Fit counts are upper bounds; rejected repairs reuse control KD students.",
                   "training_policy": "This planner performs no training or dataset access; run each generated config separately with kd.teacher_baselines.",
+                  "epoch_policy": {"teacher_student_epochs": settings.get("epochs", DEFAULT_EPOCHS),
+                                   "scope": "uniform across all selected datasets, profiles and architecture pairs",
+                                   "historical_profile_epochs_unchanged": True,
+                                   "repair_epochs": TeacherRepairOptions().repair_epochs},
                   "source_sha256": sources, "jobs": jobs})
+    parent_digest = matrix_payload_digest(protocol)
+    for job in protocol["jobs"]:
+        job["study"]["matrix_binding"] = {
+            "version": BINDING_VERSION, "parent_protocol": str(output / "protocol.json"),
+            "parent_payload_sha256": parent_digest, "job_id": job["id"],
+            "config": job["config"], "output": job["output"]}
+    return protocol
 
 
 def _queue(protocol):
@@ -271,6 +318,8 @@ def main(argv=None):
     parser.add_argument("--device", default="auto")
     parser.add_argument("--precision", choices=PRECISIONS, default="float32")
     parser.add_argument("--workers", type=int, default=0)
+    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS,
+                        help="Common teacher/student epoch budget for every new matrix setting (default: 100)")
     parser.add_argument("--teacher-seeds", type=int, nargs="+", default=(41,))
     parser.add_argument("--student-seeds", type=int, nargs="+", default=(42, 43, 44))
     parser.add_argument("--dry-run", action="store_true", help="Print protocol; no writes, downloads, or training")
@@ -278,7 +327,8 @@ def main(argv=None):
     report = materialize_matrix_plan(
         args.output, args.datasets, args.profiles, args.pairs, dry_run=args.dry_run,
         run_root=args.run_root, root=args.root, device=args.device, precision=args.precision,
-        workers=args.workers, teacher_seeds=args.teacher_seeds, student_seeds=args.student_seeds)
+        workers=args.workers, epochs=args.epochs,
+        teacher_seeds=args.teacher_seeds, student_seeds=args.student_seeds)
     print(json.dumps(report, indent=2, allow_nan=False))
 
 

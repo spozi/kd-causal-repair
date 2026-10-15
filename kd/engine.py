@@ -21,11 +21,14 @@ from .data import build_data
 from .losses import DistillationObjective, StageFeatureLoss
 from .metrics import benchmark, check_budget, evaluate, synchronize
 from .models import VisionModel, create_model
+from .group_metrics import selection_key
 from .runtime import (autocast_context, configure_accelerator, make_grad_scaler,
                       move_images, move_labels, prepare_model,
                       resolve_device as _resolve_device, resolve_precision,
                       runtime_metadata)
 from .surgery import apply_training_surgery
+from .training_provenance import (bind_training_data, load_selected_checkpoint,
+                                  load_training_checkpoint)
 
 
 def seed_everything(seed: int, *, deterministic: bool = True) -> None:
@@ -132,9 +135,24 @@ class Trainer:
 
 
 def _resume_signature(config: dict) -> dict:
-    # Fill new optional defaults so pre-calibration checkpoints stay resumable.
+    # Fill optional defaults when comparing compatible configuration schemas;
+    # checkpoint-bound data provenance is still required independently.
     normalized = from_dict(config).to_dict()
     return {key: value for key, value in normalized.items() if key not in {"name", "output_dir", "benchmark"}}
+
+
+def _validate_training_state(state, config, teacher_hash, surgery_info, initial_sha256):
+    """Validate a training or selected-best snapshot without adopting its tensors."""
+    if state.get("kind") != "training":
+        raise ValueError("Resume requires a training checkpoint (last.pt or best.pt)")
+    if _resume_signature(state["config"]) != _resume_signature(config.to_dict()):
+        raise ValueError("Resume configuration differs from the original training configuration")
+    if state.get("teacher_sha256") != teacher_hash:
+        raise ValueError("Teacher checkpoint changed since the saved training epoch")
+    if state.get("surgery_plan_sha256") != surgery_info.get("plan_sha256"):
+        raise ValueError("Surgery plan changed since the saved training epoch")
+    if state.get("initial_student_sha256") != initial_sha256:
+        raise ValueError("Training checkpoint initialization differs from the current run")
 
 
 def run_experiment(config: ExperimentConfig, *, resume: str | None = None) -> dict:
@@ -148,7 +166,9 @@ def run_experiment(config: ExperimentConfig, *, resume: str | None = None) -> di
                                config.train.channels_last)
     data = build_data(config.data, config.train, include_test=False)
     data, surgery_info = apply_training_surgery(data, config)
-    student = create_model(config.student.name, config.data.num_classes)
+    training_data_identity = bind_training_data(data.provenance)
+    student = create_model(config.student.name, config.data.num_classes,
+                           **({"weights": config.student.weights} if config.student.weights else {}))
     student_metadata = metadata(config.student.name, data.classes, config.data.image_size, config.data.source)
     if config.student.checkpoint:
         load_model_checkpoint(student, config.student.checkpoint, student_metadata)
@@ -199,6 +219,8 @@ def run_experiment(config: ExperimentConfig, *, resume: str | None = None) -> di
                       fail_fast=device.type != "cuda" or deterministic)
     directory = Path(config.output_dir) / config.name
     history, best_accuracy, start_epoch = [], -1.0, 0
+    best_selection = (-1.0, -1.0) if config.train.selection_metric == "worst_group_accuracy" else (-1.0,)
+    selected_best_sha256 = None
     loaders = {"train": data.train, "val": data.val}
     if data.test is not None:
         loaders["test"] = data.test
@@ -207,15 +229,21 @@ def run_experiment(config: ExperimentConfig, *, resume: str | None = None) -> di
     seed_everything(config.train.seed, deterministic=deterministic)
     configure_accelerator(device, config.train.cuda_mode)
     if resume:
-        state = load_model_checkpoint(student, resume, student_metadata)
-        if state.get("kind") != "training":
-            raise ValueError("Resume requires a training checkpoint (last.pt or best.pt)")
-        if _resume_signature(state["config"]) != _resume_signature(config.to_dict()):
-            raise ValueError("Resume configuration differs from the original training configuration")
-        if state["teacher_sha256"] != teacher_hash:
-            raise ValueError("Teacher checkpoint changed since the saved training epoch")
-        if state.get("surgery_plan_sha256") != surgery_info.get("plan_sha256"):
-            raise ValueError("Surgery plan changed since the saved training epoch")
+        resume_path = Path(resume).resolve()
+        last_path, best_path = directory / "last.pt", directory / "best.pt"
+        if resume_path not in {last_path.resolve(), best_path.resolve()}:
+            raise ValueError("Resume from last.pt or best.pt in the original run directory")
+        if last_path.is_symlink() or not last_path.is_file():
+            raise ValueError("Resume requires the original committed last.pt selection anchor")
+        anchor = load_training_checkpoint(last_path, student_metadata, data.provenance)
+        _validate_training_state(anchor, config, teacher_hash, surgery_info, initial_student_sha256)
+        best = load_selected_checkpoint(best_path, student_metadata, data.provenance, anchor)
+        _validate_training_state(best, config, teacher_hash, surgery_info, initial_student_sha256)
+        state = best if resume_path == best_path.resolve() else anchor
+        selected_best_sha256 = anchor["selected_best_checkpoint_sha256"]
+        # All provenance guards run before any saved model/optimizer/RNG state
+        # is adopted and before the existing run artifacts are rewritten.
+        student.load_state_dict(state["student"], strict=True)
         objective.load_state_dict(state["objective"])
         if adaptive_loss is not None and adaptive_loss.controller.last_epoch.item() != state["epoch"] + 1:
             raise ValueError("Adaptive focal controller state does not match the resumed epoch")
@@ -224,14 +252,12 @@ def run_experiment(config: ExperimentConfig, *, resume: str | None = None) -> di
         if trainer.scaler.is_enabled() and state.get("amp_scaler"):
             trainer.scaler.load_state_dict(state["amp_scaler"])
         history, best_accuracy = state["history"], state["best_accuracy"]
+        best_selection = max(selection_key(row["val"], config.train.selection_metric) for row in history)
         if config.calibration.enabled and "calibration_controller" not in state:
             raise ValueError("Calibration resume requires saved controller state")
         if "calibration_controller" in state:
             controller.load_state_dict(state["calibration_controller"])
         start_epoch = state["epoch"] + 1
-        # Resume in the same run to retain its previously selected best model.
-        if Path(resume).resolve().parent != directory.resolve() or not (directory / "best.pt").exists():
-            raise ValueError("Resume in the original run directory, which must contain best.pt")
         restore_rng(state["rng"], loaders)
     else:
         if directory.exists() and any(directory.iterdir()):
@@ -264,8 +290,10 @@ def run_experiment(config: ExperimentConfig, *, resume: str | None = None) -> di
         if adaptive_decision is not None:
             history[-1]["adaptive_focal"] = adaptive_decision
         scheduler.step()
-        improved = validation["accuracy"] > best_accuracy
-        best_accuracy = max(best_accuracy, validation["accuracy"])
+        candidate_selection = selection_key(validation, config.train.selection_metric)
+        improved = candidate_selection > best_selection
+        best_selection = max(best_selection, candidate_selection)
+        best_accuracy = best_selection[0]
         state = {**student_metadata, "kind": "training", "epoch": epoch,
                  "student": student.state_dict(), "objective": objective.state_dict(),
                  "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
@@ -273,13 +301,21 @@ def run_experiment(config: ExperimentConfig, *, resume: str | None = None) -> di
                  "teacher_sha256": teacher_hash, "rng": capture_rng(loaders),
                  "amp_scaler": trainer.scaler.state_dict() if trainer.scaler.is_enabled() else None,
                  "surgery_plan_sha256": surgery_info.get("plan_sha256"),
+                 "training_data_identity": training_data_identity,
+                 "initial_student_sha256": initial_student_sha256,
                  "calibration_controller": controller.state_dict()}
         if improved:
             save_checkpoint(directory / "best.pt", state)
+            selected_best_sha256 = fingerprint(directory / "best.pt")
+        state["selected_best_checkpoint_sha256"] = selected_best_sha256
         save_checkpoint(directory / "last.pt", state)
         write_json(directory / "history.json", history)
         print(f"{config.name} epoch={epoch + 1}/{config.train.epochs} loss={training['total']:.4f} val_accuracy={validation['accuracy']:.4f} val_ece={validation['ece_15_bins']:.4f} cal_weight={objective.calibration_weight:.3f}", flush=True)
-    best = load_model_checkpoint(student, directory / "best.pt", student_metadata)
+    anchor = load_training_checkpoint(directory / "last.pt", student_metadata, data.provenance)
+    _validate_training_state(anchor, config, teacher_hash, surgery_info, initial_student_sha256)
+    best = load_selected_checkpoint(directory / "best.pt", student_metadata, data.provenance, anchor)
+    _validate_training_state(best, config, teacher_hash, surgery_info, initial_student_sha256)
+    student.load_state_dict(best["student"], strict=True)
     if teacher is not None and tensor_state_fingerprint(teacher.state_dict()) != teacher_tensor_hash:
         raise RuntimeError("Teacher tensors changed during student training")
     quality = evaluate(student, data.val, device, precision=config.train.precision,
@@ -302,6 +338,10 @@ def run_experiment(config: ExperimentConfig, *, resume: str | None = None) -> di
                             "extra_trainable_parameters": sum(p.numel() for p in objective.parameters()),
                             "timing_scope": "training epochs including data loading; excludes validation, checkpointing and profiling"},
                "checkpoint": str(directory / "student.pt")}
+    if config.student.weights is not None:
+        summary["initialization"] = student.initialization
+    if config.train.selection_metric != "accuracy":
+        summary["checkpoint_selection_metric"] = config.train.selection_metric
     if adaptive_loss is not None:
         summary["adaptive_focal_final_state"] = adaptive_loss.controller.snapshot()
     if config.cpc.enabled:

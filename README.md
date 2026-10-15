@@ -2,10 +2,16 @@
 
 A classification implementation of [the project guidelines](knowledge-distillation-guidelines.md), built with PyTorch and torchvision. It includes supervised training, classical logits KD, Decoupled Knowledge Distillation (DKD), optional semantic-stage feature transfer, controlled ablations, and inference-cost reporting.
 
-[Experiment settings](docs/experiment-settings.md) consolidates the shared teacher,
-student, KD, and repair settings across all 13 datasets and four profiles. It also
-records additional baseline recipes, their configuration status, and separate
-architecture/loss follow-ups without repeating the common settings.
+[Experiment settings](docs/experiment-settings.md) defines the implemented **full
+16-dataset experiment**: the original 13 class/long-tail datasets plus
+**Colored MNIST, Waterbirds, and UrbanCars**. The
+[shortcut companion](docs/causal-benchmark-phase1.md) defines subgroup outcomes,
+teacher-to-student transfer, and research/adaptation boundaries. The planner now
+includes all 16, with native group-aware repair/selection and mechanism controls
+on the three additions. Waterbirds/UrbanCars use ImageNet-pretrained ResNet-34
+teachers and ResNet-18 students (`IMAGENET1K_V1`); provision their local releases
+before training. Full-budget results are not measured. Historical settings and
+saved results remain unchanged.
 
 [Teacher-training baselines and distillability](docs/teacher-training-baselines.md)
 adds an isolated, Consensus-researched benchmark for RandAugment, Mixup, CutMix,
@@ -13,10 +19,29 @@ label smoothing, Balanced Softmax, raw/probability MSE, SAM, EMA, and a combined
 augmentation recipe. It compares teacher quality with matched downstream KD,
 includes the original channel-repair method using the common CE teacher,
 freezes validation selection before test access, and documents recent 2025–2026
-follow-up methods. Inspect all 13 datasets and four profiles without writes or
+follow-up methods. Inspect all 16 datasets (four profiles on the original 13,
+one native setting on each addition) without writes or
 training using `python -m kd.teacher_baseline_matrix plan --output
-runs/teacher-baselines-v3/matrix-plan --dry-run`. Add
+runs/teacher-baselines-v5/matrix-plan --epochs 100 --dry-run`. Add
 `--pairs convnet6 resnet34_resnet18` to include both supported pairings.
+New matrix runs use 100 teacher/student epochs uniformly and 20 repair epochs;
+historical budgets stay frozen. Generated configs bind their parent plan and
+computational sources before execution. Interrupted training requires new
+checkpoint-bound data provenance and a committed `last.pt` digest of the selected
+`best.pt`; unsealed legacy training checkpoints without those bindings cannot
+resume, although completed hash-verified inference artifacts remain usable.
+An interrupted best/last pair commit fails closed: restore a known matching pair
+or use a fresh run. Repair adoption always checks the student's recorded
+training-teacher digest, even when the original checkpoint path still exists.
+
+The default full plan has 55 settings and 56 test endpoint panels; both
+class-family pairs give 107/108. Create a fresh plan after code changes, then use
+`python -m kd.full_benchmark preflight --plan PLAN`; the subsequent phases are
+`train`, `evaluate` and `report` (`report` also needs `--output`). See
+[data layouts and runnable commands](docs/experiment-settings.md#9-execution-readiness-and-pre-run-checks).
+Preflight never downloads weights; explicit training does. Offline tests cover
+native-resolution training/KD with local fixture weights, not GPU capacity or
+actual pretrained-weight performance.
 
 **CIFAR-10 is supported**, with a full-data, repeated-seed study and a held-out test phase. See [the CIFAR-10 protocol](docs/cifar10.md). Generated results live in `runs/cifar10/report.json`; render `report.md` and figures with `python -m kd.reporting --study runs/cifar10` after the study completes.
 

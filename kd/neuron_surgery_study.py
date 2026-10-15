@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict, dataclass, replace
+import copy
 import hashlib
 import json
 import os
@@ -15,17 +16,17 @@ import sys
 import numpy as np
 import torch
 import torchvision
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import ConcatDataset, DataLoader, Subset
 
 from .calibration_metrics import extended_prediction_metrics
 from .checkpoints import (fingerprint, load_model_checkpoint, metadata, save_checkpoint,
                           write_json)
 from .config import SurgeryConfig, from_dict
-from .data import CATALOG_SOURCES, build_data
+from .data import CATALOG_SOURCES, _targets, build_data, image_transform
 from .engine import resolve_device, run_experiment, seed_everything
 from .evaluation import (collect_predictions, paired_calibration_comparison,
                          paired_comparison, prediction_metrics)
-from .models import VisionModel, create_model
+from .models import VisionModel, canonical_model_name, create_model
 from .neuron_surgery import (FORMAT_VERSION, TAIL_CLASSES, build_companion_records,
                              causal_channel_validation, collect_teacher_diagnostics,
                              consensus_channel_ranking, differential_channel_scores,
@@ -43,13 +44,25 @@ CHANNEL_BUDGETS = (2, 4, 8)
 LEARNING_RATES = (0.001, 0.005)
 # Repair the screened channels, or a control set, to test whether screening is what helps.
 CHANNEL_SELECTIONS = ("screened", "random", "stage_matched_random", "antiscreened")
+# Where hard images come from. A teacher that has memorized its training images makes
+# few errors on them, so "validation" takes hard images from one half of the validation
+# set and selects candidates on the other half.
+HARD_SOURCES = ("train", "validation")
 EXPECTED_TRAIN_COUNTS = (4500, 2698, 1617, 969, 581, 348, 209, 125, 75, 45)
 EXPECTED_TARGET_COUNTS = (70, 42, 25, 15, 9)
 STATISTICS_SEED = 2026
 BOOTSTRAP_REPETITIONS = 2000
-COMPUTE_SOURCES = ("config.py", "data.py", "neuron_surgery.py",
-                   "neuron_surgery_study.py", "losses.py", "models.py",
-                   "runtime.py")
+# Freeze the executed data, repair, downstream training and reporting stack,
+# not only the channel-localization implementation. Expanded coverage affects
+# new protocols; historical protocols must never be silently backfilled.
+COMPUTE_SOURCES = (
+    "config.py", "data.py", "dataset_registry.py", "catalog/v1.json",
+    "checkpoints.py", "engine.py", "training_provenance.py", "surgery.py",
+    "losses.py", "calibration.py", "adaptive_focal.py", "cpc.py", "models.py",
+    "runtime.py", "metrics.py", "evaluation.py", "calibration_metrics.py",
+    "neuron_surgery.py", "neuron_surgery_study.py",
+    "shortcut_data.py", "group_metrics.py",
+)
 
 
 @dataclass(frozen=True)
@@ -95,6 +108,7 @@ class NeuronSurgerySpec:
     allow_sparse_class_fallback: bool = False
     channel_selection: str = "screened"
     channel_selection_seed: int = 2026
+    hard_source: str = "train"
 
     def validate(self) -> None:
         if not self.name or Path(self.name).name != self.name:
@@ -113,6 +127,8 @@ class NeuronSurgerySpec:
             raise ValueError("Study score_mode must be differential or gradient_only")
         if self.repair_subject not in {"teacher", "student"}:
             raise ValueError("Study repair_subject must be teacher or student")
+        if self.hard_source not in HARD_SOURCES:
+            raise ValueError(f"Study hard_source must be one of {HARD_SOURCES}")
         if self.channel_selection not in CHANNEL_SELECTIONS:
             raise ValueError(f"Study channel_selection must be one of {CHANNEL_SELECTIONS}")
         if not isinstance(self.causal_validation, bool) or not isinstance(self.downstream_kd, bool):
@@ -282,11 +298,13 @@ def _data_available(config) -> None:
 def _configured_stages(spec: NeuronSurgerySpec) -> tuple[str, ...]:
     if spec.stages is not None:
         return spec.stages
-    if spec.teacher_model in {"cifar_teacher", "cifar_student"}:
+    architecture = canonical_model_name(spec.teacher_model)
+    if architecture in {"cifar_teacher", "cifar_student"}:
         return ("stage2", "stage3")
-    if spec.teacher_model in {"resnet18", "resnet34", "resnet50"}:
+    if architecture in {"resnet18", "resnet34", "resnet50",
+                        "cifar_resnet18", "cifar_resnet34", "cifar_resnet50"}:
         return ("stage3", "stage4")
-    raise ValueError("Study teacher must be cifar_teacher or a supported ResNet")
+    raise ValueError("Study teacher must be ConvNet-6 or a supported ResNet")
 
 
 def _with_data_root(config, data_root: str | Path | None):
@@ -294,6 +312,14 @@ def _with_data_root(config, data_root: str | Path | None):
     if data_root is None:
         return config
     return replace(config, data=replace(config.data, root=str(Path(data_root).resolve())))
+
+
+def _require_plain_ce_baseline(config, role: str) -> None:
+    """Keep adopted anchors and controls within the declared repair/KD contract."""
+    if (config.calibration.enabled or config.cpc.enabled
+            or config.supervised_loss.method != "cross_entropy"):
+        raise ValueError(
+            f"{role} baseline requires plain cross-entropy with calibration and CPC disabled")
 
 
 def _load_inputs(baseline: str | Path, seeds: tuple[int, ...],
@@ -308,6 +334,7 @@ def _load_inputs(baseline: str | Path, seeds: tuple[int, ...],
     if not teacher_config_path.is_file() or not teacher_checkpoint.is_file():
         raise FileNotFoundError(f"Missing repair teacher config or checkpoint: {teacher_directory}")
     teacher_config = _with_data_root(from_dict(_read(teacher_config_path)), data_root)
+    _require_plain_ce_baseline(teacher_config, "Teacher")
     teacher_config.validate(require_teacher=False)
     factor = ({"lt-if10": 10.0, "lt-if50": 50.0, "lt-if100": 100.0}
               .get(teacher_config.data.dataset_profile, teacher_config.data.imbalance_factor))
@@ -337,6 +364,7 @@ def _load_inputs(baseline: str | Path, seeds: tuple[int, ...],
         if not config_path.is_file() or not checkpoint.is_file() or not summary_path.is_file():
             raise FileNotFoundError(f"Missing matched KD baseline artifacts for seed {seed}")
         config = _with_data_root(from_dict(_read(config_path)), data_root)
+        _require_plain_ce_baseline(config, f"Seed {seed} KD")
         config.validate()
         recipe = (config.data, config.student.name, config.teacher.name,
                   config.distillation.method, config.distillation.temperature,
@@ -351,17 +379,37 @@ def _load_inputs(baseline: str | Path, seeds: tuple[int, ...],
                 or config.name != run_name):
             raise ValueError(f"Seed {seed} baseline differs from the predeclared KD recipe")
         summary = _read(summary_path)
-        # Configs record the training host's path. Where it no longer exists, the hash
-        # the student recorded at training time identifies its teacher just as strictly.
+        # The recorded training identity must match even if a checkpoint path was
+        # later replaced. Relocated archives can rely on it when the old path is gone.
+        teacher_identity = summary.get("teacher")
+        recorded_teacher = (teacher_identity.get("checkpoint_sha256")
+                            if isinstance(teacher_identity, dict) else None)
+        if recorded_teacher != teacher_sha256:
+            raise ValueError("Student baseline recorded training teacher differs from the repair teacher")
         source = Path(config.teacher.checkpoint)
-        trained_from = (fingerprint(source) if source.is_file()
-                        else (summary.get("teacher") or {}).get("checkpoint_sha256"))
-        if trained_from != teacher_sha256:
-            raise ValueError("Student baseline teacher differs from the repair teacher")
+        if source.is_file() and fingerprint(source) != teacher_sha256:
+            raise ValueError("Student baseline teacher checkpoint differs from the repair teacher")
         students[seed] = {"config": config, "checkpoint": checkpoint,
                           "summary": summary,
                           "checkpoint_sha256": fingerprint(checkpoint)}
     return baseline, teacher_config, teacher_checkpoint, students
+
+
+def validation_repair_split(labels, seed: int = REPAIR_SEED) -> tuple[list[int], list[int]]:
+    """Split validation positions class by class into repair and selection halves.
+
+    The selection half takes the larger share, so every class with a validation image
+    keeps at least one there and target recall stays defined on it.
+    """
+    labels = np.asarray(labels, dtype=np.int64)
+    generator = np.random.default_rng(seed)
+    repair, selection = [], []
+    for label in np.unique(labels):
+        positions = generator.permutation(np.flatnonzero(labels == label))
+        half = len(positions) // 2
+        repair.extend(positions[:half].tolist())
+        selection.extend(positions[half:].tolist())
+    return sorted(repair), sorted(selection)
 
 
 def select_channels(selection: str, ranking: list[dict], pool: list[dict], budget: int,
@@ -424,6 +472,7 @@ def _protocol(baseline: Path, output: Path, device: str, teacher_config,
                                                    if spec.target_classes is not None else None),
                              "class_policy": spec.target_class_policy,
                              "hard_fraction": spec.target_fraction,
+                             "hard_source": spec.hard_source,
                              "policy": "all mistakes plus highest-NLL correct rows to each class quota"},
         "companions": {"count": spec.companion_count, "metric": "cosine_distance",
                        "sparse_class_fallback": spec.allow_sparse_class_fallback,
@@ -448,7 +497,9 @@ def _protocol(baseline: Path, output: Path, device: str, teacher_config,
                    "kd_weight": spec.kd_weight, "feature_weight": spec.feature_weight,
                    "preservation_ce_weight": spec.preservation_ce_weight,
                    "loss": "CE(target)+weighted CE(preservation)+weighted KD_T4(anchor,preservation)+weighted late-stage feature preservation"},
-        "teacher_selection": {"split": "development validation",
+        "teacher_selection": {"split": ("selection half of development validation"
+                                        if spec.hard_source == "validation"
+                                        else "development validation"),
                               "primary": "target_macro_recall",
                               "overall_accuracy_guardrail": -0.005,
                               "tie_breaks": ["target_balanced_nll", "fewer_channels", "lower_learning_rate"],
@@ -769,9 +820,30 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
     data_identity = {"protocol_sha256": protocol_sha256, "teacher_sha256": fingerprint(teacher_checkpoint),
                      "data": diagnostic_data.provenance, "classes": diagnostic_data.classes,
                      "target_classes": list(target_classes)}
+    train_count = len(diagnostic_data.train.dataset)
+    repair_pool = diagnostic_data.train.dataset
+    diagnostic_loader, selection_loader = diagnostic_data.train, diagnostic_data.val
+    held_out = None
+    if spec.hard_source == "validation":
+        validation_subset = diagnostic_data.val.dataset
+        base_indices = np.asarray(validation_subset.indices, dtype=np.int64)
+        repair_positions, selection_positions = validation_repair_split(
+            _targets(validation_subset.dataset)[base_indices])
+        held_out = {"repair": base_indices[repair_positions].tolist(),
+                    "selection": base_indices[selection_positions].tolist()}
+        _freeze(directory / "held_out_split.json", held_out)
+        data_identity["held_out_split_sha256"] = fingerprint(directory / "held_out_split.json")
+        repair_pool = ConcatDataset([diagnostic_data.train.dataset,
+                                     Subset(validation_subset.dataset, held_out["repair"])])
+        loader_kwargs = loader_performance_kwargs(str(resolved_device), 0)
+        diagnostic_loader = DataLoader(repair_pool, batch_size=diagnostic_data.train.batch_size,
+                                       shuffle=False, num_workers=0, **loader_kwargs)
+        selection_loader = DataLoader(Subset(validation_subset.dataset, held_out["selection"]),
+                                      batch_size=diagnostic_data.val.batch_size, shuffle=False,
+                                      num_workers=0, **loader_kwargs)
 
     def diagnostics_compute():
-        records, embeddings = collect_teacher_diagnostics(teacher, diagnostic_data.train, resolved_device)
+        records, embeddings = collect_teacher_diagnostics(teacher, diagnostic_loader, resolved_device)
         return {"labels": np.asarray([row["true_label"] for row in records], dtype=np.int64),
                 "predictions": np.asarray([row["predicted_label"] for row in records], dtype=np.int64),
                 "confidence": np.asarray([row["confidence"] for row in records], dtype=np.float32),
@@ -783,26 +855,34 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
     targets_identity = {**data_identity, "diagnostics_sha256": fingerprint(directory / "diagnostics.npz")}
 
     def targets_compute():
-        targets = select_hard_tail_targets(records, target_classes,
+        hard_rows = records if held_out is None else records[train_count:]
+        kept_rows = records if held_out is None else records[:train_count]
+        # A target class whose only validation image went to the selection half has no
+        # held-out image to repair, so localization covers the classes that have one.
+        localized = tuple(label for label in target_classes
+                          if any(row["true_label"] == label for row in hard_rows))
+        targets = select_hard_tail_targets(hard_rows, localized,
                                            fraction=spec.target_fraction)
         counts = tuple(sum(row["true_label"] == label for row in targets)
-                       for label in target_classes)
+                       for label in localized)
         if spec.expected_target_counts is not None and counts != spec.expected_target_counts:
             raise ValueError(f"Hard-target counts changed: {counts}")
         indices = [row["index"] for row in targets]
         preservation = select_preservation_indices(
-            records, indices, seed=REPAIR_SEED,
+            kept_rows, indices, seed=REPAIR_SEED,
             allow_sparse_fallback=spec.allow_sparse_class_fallback)
-        preservation_pool = [row["index"] for row in records
+        preservation_pool = [row["index"] for row in kept_rows
                              if row["correct"] and row["index"] not in set(indices)]
         if not preservation_pool and spec.allow_sparse_class_fallback:
-            preservation_pool = [row["index"] for row in records
+            preservation_pool = [row["index"] for row in kept_rows
                                  if row["index"] not in set(indices)]
         if not preservation_pool:
             raise ValueError("Repair requires at least one non-target preservation example")
         preservation_classes = sorted({records[index]["true_label"] for index in preservation})
         return {"targets": targets, "target_counts": list(counts),
                 "target_classes": list(target_classes),
+                "hard_source": spec.hard_source,
+                "localization_target_classes": list(localized),
                 "causal_preservation_indices": preservation,
                 "causal_preservation_classes": preservation_classes,
                 "causal_preservation_omitted_classes": sorted(
@@ -810,6 +890,7 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
                 "training_preservation_indices": preservation_pool}
 
     target_plan = _stage_json(directory / "targets.json", targets_identity, targets_compute)
+    localization_classes = tuple(target_plan.get("localization_target_classes", target_classes))
     companion_identity = {"protocol_sha256": protocol_sha256,
                           "targets_sha256": fingerprint(directory / "targets.json"),
                           "diagnostics_sha256": fingerprint(directory / "diagnostics.npz")}
@@ -824,7 +905,7 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
                       "teacher_sha256": fingerprint(teacher_checkpoint)}
     scores = _stage_npz(
         directory / "differential_scores.npz", score_identity,
-        lambda: differential_channel_scores(teacher, diagnostic_data.train.dataset, companions,
+        lambda: differential_channel_scores(teacher, repair_pool, companions,
                                             resolved_device, batch_size=16, stages=stages,
                                             score_mode=spec.score_mode))
     consensus_identity = {"protocol_sha256": protocol_sha256,
@@ -832,14 +913,14 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
     consensus = _stage_json(
         directory / "consensus_scores.json", consensus_identity,
         lambda: consensus_channel_ranking(
-            scores, target_classes=target_classes, repetitions=20, seed=REPAIR_SEED,
+            scores, target_classes=localization_classes, repetitions=20, seed=REPAIR_SEED,
             top_fraction=0.25, stability_threshold=0.7, stages=stages))
 
-    target_loader = DataLoader(Subset(diagnostic_data.train.dataset,
+    target_loader = DataLoader(Subset(repair_pool,
                                       [row["index"] for row in target_plan["targets"]]),
                                batch_size=128, shuffle=False, num_workers=0,
                                **loader_performance_kwargs(str(resolved_device), 0))
-    preservation_loader = DataLoader(Subset(diagnostic_data.train.dataset,
+    preservation_loader = DataLoader(Subset(repair_pool,
                                             target_plan["causal_preservation_indices"]),
                                      batch_size=128, shuffle=False, num_workers=0,
                                      **loader_performance_kwargs(str(resolved_device), 0))
@@ -850,7 +931,7 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
         if spec.causal_validation:
             return causal_channel_validation(
                 teacher, target_loader, preservation_loader, consensus, resolved_device,
-                target_classes=target_classes, accuracy_guardrail=0.005)
+                target_classes=localization_classes, accuracy_guardrail=0.005)
         ranking = [{"stage": row["stage"], "channel": row["channel"]}
                    for row in consensus["channels"] if row["eligible"]]
         return {"performed": False, "reason": "causal_validation_disabled",
@@ -896,7 +977,7 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
         return comparison
 
     original_validation = _validation_report(
-        teacher, diagnostic_data.val, resolved_device, diagnostic_data.classes,
+        teacher, selection_loader, resolved_device, diagnostic_data.classes,
         target_classes, precision=teacher_config.train.precision,
         channels_last=teacher_config.train.channels_last)
     _freeze(directory / "teacher_validation_baseline.json", original_validation)
@@ -905,6 +986,15 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
                                 include_test=False, diagnostic=False)
     if augmented_data.provenance != diagnostic_data.provenance:
         raise ValueError("Augmented and canonical repair datasets have different splits")
+    repair_training_pool = augmented_data.train.dataset
+    if held_out is not None:
+        if list(augmented_data.val.dataset.indices) != list(diagnostic_data.val.dataset.indices):
+            raise ValueError("Augmented and canonical validation splits differ")
+        # Held-out hard images get the training augmentation, like training images do.
+        held_out_images = copy.copy(augmented_data.val.dataset.dataset)
+        held_out_images.transform = image_transform(teacher_config.data, training=True)
+        repair_training_pool = ConcatDataset([augmented_data.train.dataset,
+                                              Subset(held_out_images, held_out["repair"])])
     labels = np.asarray([row["true_label"] for row in records], dtype=np.int64)
     candidates = []
     for budget in localization["available_channel_budgets"]:
@@ -917,10 +1007,10 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
                         "budget": budget, "learning_rate": learning_rate, "channels": channels}
             result = _train_candidate(
                 directory / "repair_candidates" / name, identity, teacher_config,
-                teacher_checkpoint, teacher, augmented_data.train.dataset, labels,
+                teacher_checkpoint, teacher, repair_training_pool, labels,
                 [row["index"] for row in target_plan["targets"]],
                 target_plan["training_preservation_indices"], channels, resolved_device,
-                diagnostic_data.classes, diagnostic_data.val, localization_sha256,
+                diagnostic_data.classes, selection_loader, localization_sha256,
                 budget, learning_rate, spec, target_classes)
             candidates.append(result)
             write_json(directory / "progress.json", {"phase": "teacher_repair",

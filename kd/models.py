@@ -57,10 +57,30 @@ class ResNetAdapter(VisionModel):
     CIFAR stem, a 3x3 stride-1 convolution without pooling, and leaves the stages unchanged.
     """
 
-    def __init__(self, name: str, num_classes: int, *, cifar_stem: bool = False):
+    def __init__(self, name: str, num_classes: int, *, cifar_stem: bool = False, weights=None):
         super().__init__()
         builders = {"resnet18": models.resnet18, "resnet34": models.resnet34, "resnet50": models.resnet50}
-        self.backbone = builders[name](weights=None, num_classes=num_classes)
+        if weights is not None:
+            if cifar_stem or weights != "IMAGENET1K_V1":
+                raise ValueError("Pretrained initialization requires ordinary stems and an explicit IMAGENET1K_V1 release")
+            release = getattr(models, f"ResNet{name.removeprefix('resnet')}_Weights").IMAGENET1K_V1
+            self.backbone = builders[name](weights=release)
+            from .checkpoints import tensor_state_fingerprint
+            self.initialization = {"weights": weights, "weights_enum": str(release),
+                                   "url": release.url,
+                                   "weights_tensor_sha256": tensor_state_fingerprint(self.backbone.state_dict())}
+            from pathlib import Path
+            from .checkpoints import fingerprint
+            cached = Path(torch.hub.get_dir()) / "checkpoints" / release.url.rsplit("/", 1)[-1]
+            if cached.is_file():
+                digest = fingerprint(cached)
+                expected = cached.stem.rsplit("-", 1)[-1]
+                if not digest.startswith(expected):
+                    raise ValueError("Cached ImageNet release does not match its advertised SHA256 prefix")
+                self.initialization["weights_file_sha256"] = digest
+            self.backbone.fc = nn.Linear(self.backbone.fc.in_features, num_classes)
+        else:
+            self.backbone = builders[name](weights=None, num_classes=num_classes)
         if cifar_stem:
             self.backbone.conv1 = nn.Conv2d(3, 64, 3, stride=1, padding=1, bias=False)
             # torchvision's own initialization for its convolutions.
@@ -191,9 +211,13 @@ def canonical_model_name(name: str) -> str:
     return _MODEL_ALIASES.get(name, name)
 
 
-def create_model(name: str, num_classes: int) -> VisionModel:
+def create_model(name: str, num_classes: int, *, weights=None) -> VisionModel:
     """A single factory keeps architecture selection out of training and losses."""
     name = canonical_model_name(name)
+    if weights is not None:
+        if name not in {"resnet18", "resnet34", "resnet50"}:
+            raise ValueError("Pretrained weights are supported for ordinary-stem ResNets only")
+        return ResNetAdapter(name, num_classes, weights=weights)
     tiny_widths = {"tiny_small": (16, 32, 64), "tiny_medium": (32, 64, 128),
                    "tiny_large": (64, 128, 256)}
     if name in tiny_widths:

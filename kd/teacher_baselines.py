@@ -19,15 +19,17 @@ from .checkpoints import (fingerprint, load_model_checkpoint, metadata,
                           save_checkpoint, tensor_state_fingerprint, write_json)
 from .config import (BenchmarkConfig, DataConfig, DistillationConfig, ExperimentConfig,
                      ModelConfig, TrainConfig, from_dict)
-from .data import build_data
+from .data import _effective_factor, build_data
 from .engine import run_experiment
 from .evaluation import collect_predictions, prediction_metrics, save_prediction_report
 from .models import MODEL_NAMES, create_model
+from .matrix_binding import STUDY_SOURCE_FILES, verify_matrix_binding
 from .runtime import configure_accelerator, prepare_model, resolve_device, resolve_precision
 from .teacher_repair_baseline import (REPAIR_FILES, REPAIR_NAME, TeacherRepairOptions,
                                      repair_options, repair_spec, repair_targets, train_repair_teacher,
                                      verify_repair_details)
 from .teacher_training import RECIPES, randaugment_policy, train_teacher
+from .training_provenance import load_selected_checkpoint, validate_training_data
 
 
 def _json(value):
@@ -47,9 +49,14 @@ class TeacherBaselineSpec:
     kd_weight: float = 0.5
     warmup_epochs: int = 5
     repair: TeacherRepairOptions | None = None
+    matrix_binding: dict | None = None
+    student_weights: str | None = None
+    group_policy: dict | None = None
 
     def validate(self):
         self.teacher.validate()
+        from .shortcut_data import SHORTCUT_DATASETS
+        shortcut = self.teacher.data.source in SHORTCUT_DATASETS
         if self.teacher.distillation.method != "supervised":
             raise ValueError("Base teacher configuration must be supervised")
         if (self.teacher.calibration.enabled or self.teacher.cpc.enabled
@@ -79,24 +86,41 @@ class TeacherBaselineSpec:
         if self.repair is not None:
             if REPAIR_NAME not in self.recipes:
                 raise ValueError("Repair options require the teacher_repair condition")
-            for seed in self.teacher_seeds:
-                repair_spec(self, seed)
+            if shortcut:
+                self.repair.validate()
+            else:
+                for seed in self.teacher_seeds:
+                    repair_spec(self, seed)
         for metric in (self.teacher_selection_metric, self.student_selection_metric):
-            if metric not in {"accuracy", "balanced_accuracy"}:
-                raise ValueError("Selection metrics must be accuracy or balanced_accuracy")
+            if metric not in {"accuracy", "balanced_accuracy", "worst_group_accuracy"}:
+                raise ValueError("Unknown teacher/student selection metric")
+        if shortcut:
+            from .shortcut_baselines import validate_shortcut_spec
+            validate_shortcut_spec(self)
+        elif self.group_policy is not None or "worst_group_accuracy" in (self.teacher_selection_metric, self.student_selection_metric):
+            raise ValueError("Group policy/selection requires a shortcut dataset")
+        if self.student_weights is not None:
+            replace(self.teacher, student=ModelConfig(self.student_model, weights=self.student_weights)).validate(require_teacher=False)
         # Reuse existing validation of KD hyperparameters without needing a checkpoint yet.
         replace(self.teacher, distillation=DistillationConfig(
             method="kd", temperature=self.temperature, weight=self.kd_weight,
             warmup_epochs=self.warmup_epochs)).validate(require_teacher=False)
 
     def to_dict(self):
-        return _json({"teacher": self.teacher.to_dict(), "student_model": self.student_model,
+        value = {"teacher": self.teacher.to_dict(), "student_model": self.student_model,
                       "teacher_seeds": self.teacher_seeds, "student_seeds": self.student_seeds,
                       "recipes": self.recipes, "teacher_selection_metric": self.teacher_selection_metric,
                       "student_selection_metric": self.student_selection_metric,
                       "temperature": self.temperature, "kd_weight": self.kd_weight,
                       "warmup_epochs": self.warmup_epochs,
-                      "repair": (self.repair.__dict__ if self.repair is not None else None)})
+                      "repair": (self.repair.__dict__ if self.repair is not None else None)}
+        if self.matrix_binding is not None:
+            value["matrix_binding"] = self.matrix_binding
+        if self.student_weights is not None:
+            value["student_weights"] = self.student_weights
+        if self.group_policy is not None:
+            value["group_policy"] = self.group_policy
+        return _json(value)
 
 
 def load_spec(path):
@@ -109,6 +133,7 @@ def load_spec(path):
             raw[name] = tuple(raw[name])
     spec = TeacherBaselineSpec(**raw)
     spec.validate()
+    verify_matrix_binding(spec, config_path=path)
     return spec
 
 
@@ -116,7 +141,8 @@ def study_configs(spec: TeacherBaselineSpec, output):
     spec.validate()
     output = str(Path(output).resolve())
     teachers, students, supervised = [], [], []
-    for recipe in spec.recipes:
+    from .shortcut_baselines import mechanism_conditions
+    for recipe in (*spec.recipes, *mechanism_conditions(spec)):
         for teacher_seed in spec.teacher_seeds:
             name = (f"teacher_repair_seed{teacher_seed}" if recipe == REPAIR_NAME
                     else f"teacher_{recipe}_seed{teacher_seed}")
@@ -126,7 +152,7 @@ def study_configs(spec: TeacherBaselineSpec, output):
             for student_seed in spec.student_seeds:
                 student = replace(spec.teacher,
                     name=f"kd_{recipe}_teacher{teacher_seed}_seed{student_seed}", output_dir=output,
-                    student=ModelConfig(spec.student_model),
+                    student=ModelConfig(spec.student_model, weights=spec.student_weights),
                     teacher=ModelConfig(spec.teacher.student.name, str(Path(output) / name / "student.pt")),
                     distillation=DistillationConfig(method="kd", temperature=spec.temperature,
                                                    weight=spec.kd_weight, warmup_epochs=spec.warmup_epochs),
@@ -135,12 +161,13 @@ def study_configs(spec: TeacherBaselineSpec, output):
                 students.append((recipe, teacher_seed, student))
     for seed in spec.student_seeds:
         supervised.append(replace(spec.teacher, name=f"supervised_student_seed{seed}", output_dir=output,
-                                  student=ModelConfig(spec.student_model),
+                                  student=ModelConfig(spec.student_model, weights=spec.student_weights),
                                   train=replace(spec.teacher.train, seed=seed)))
     return teachers, students, supervised
 
 
 def plan_study(spec, output):
+    verify_matrix_binding(spec, output)
     teachers, students, supervised = study_configs(spec, output)
     repair_candidates = (len(spec.teacher_seeds) * len(spec.repair.channel_budgets)
                          * len(spec.repair.learning_rates) if spec.repair is not None else 0)
@@ -152,6 +179,11 @@ def plan_study(spec, output):
         counts.update(teacher_training_fits=len(teachers) - len(spec.teacher_seeds),
                       repair_candidate_fits_max=repair_candidates,
                       total_fits=maximum, total_fits_max=maximum)
+    from .shortcut_data import SHORTCUT_DATASETS
+    shortcut = spec.teacher.data.source in SHORTCUT_DATASETS
+    if shortcut:
+        from .shortcut_baselines import shortcut_plan_fields
+        return _json(shortcut_plan_fields(spec, output, teachers, students, supervised))
     return _json({"version": 2, "purpose": "Teacher performance and downstream distillability",
                   "spec": spec.to_dict(), "output": str(Path(output).resolve()),
                   "teacher_runs": [{"recipe": recipe, "config": config.to_dict()}
@@ -169,13 +201,8 @@ def plan_study(spec, output):
                   "counts_note": "With repair enabled, teachers counts conditions; total_fits is an upper bound including all repair candidates. Rejected repairs reuse KD controls.",
                   "student_checkpoint_rule": "best validation accuracy (existing engine)",
                   "test_access": "explicit evaluate only, after all checkpoints and selection are frozen",
-                  "source_sha256": {name: fingerprint(Path(__file__).parent / name) for name in
-                                    ("teacher_baselines.py", "teacher_training.py", "baseline_artifacts.py",
-                                     "teacher_repair_baseline.py", "neuron_surgery.py", "neuron_surgery_study.py",
-                                     "engine.py", "data.py", "dataset_registry.py", "catalog/v1.json",
-                                     "config.py", "losses.py", "models.py", "checkpoints.py", "evaluation.py",
-                                     "metrics.py", "calibration.py", "calibration_metrics.py", "adaptive_focal.py",
-                                     "cpc.py", "surgery.py", "runtime.py")}})
+                  "source_sha256": {name: fingerprint(Path(__file__).parent / name)
+                                    for name in STUDY_SOURCE_FILES}})
 
 
 def _freeze_protocol(directory, protocol):
@@ -189,7 +216,7 @@ def _freeze_protocol(directory, protocol):
         write_json(path, protocol)
 
 
-def _check_student_summary(config, summary):
+def _check_student_summary(config, summary, *, require_bound_selection=False):
     """Validate teacher binding and the selected export before adopting a run."""
     directory = Path(config.output_dir) / config.name
     if read_json(directory / "config.json") != _json(config.to_dict()):
@@ -206,6 +233,22 @@ def _check_student_summary(config, summary):
         if (state.get("teacher_sha256") != expected_teacher
                 or _json(state["config"]) != _json(config.to_dict())):
             raise ValueError("Student training checkpoint belongs to another configuration/teacher")
+    if require_bound_selection or "selected_best_checkpoint_sha256" in last:
+        # A verified historical completion manifest remains evidence for its
+        # saved schema. Unsealed recovery must not bless legacy or foreign best
+        # weights merely because their config and exported tensors agree.
+        validate_training_data(last, summary.get("data"))
+        validate_training_data(last, read_json(directory / "data.json"))
+        initial = summary.get("initial_student_sha256")
+        if (not isinstance(initial, str) or len(initial) != 64
+                or any(character not in "0123456789abcdef" for character in initial)
+                or any(state.get("initial_student_sha256") != initial for state in (best, last))):
+            raise ValueError("Student initialization differs from its training checkpoints")
+        best = load_selected_checkpoint(
+            directory / "best.pt",
+            metadata(config.student.name, last.get("classes", []),
+                     config.data.image_size, config.data.source),
+            summary.get("data"), last)
     if (exported.get("epoch") != best["epoch"] or summary["best_epoch"] != best["epoch"] + 1
             or tensor_state_fingerprint(exported["student"]) != tensor_state_fingerprint(best["student"])):
         raise ValueError("Student export differs from its selected best checkpoint")
@@ -235,7 +278,7 @@ def _student_run(config, *, verify_only=False):
     else:
         last = directory / "last.pt"
         summary = run_experiment(config, resume=str(last) if last.exists() else None)
-    _check_student_summary(config, summary)
+    _check_student_summary(config, summary, require_bound_selection=True)
     required = (*STUDENT_FILES, "baseline_alias.json") if (directory / "baseline_alias.json").exists() else STUDENT_FILES
     write_manifest(directory, "baseline_completion.json", required)
     return summary
@@ -260,6 +303,9 @@ def _reuse_control_student(config, control_config):
             raise ValueError("No-change alias source changed")
         if (directory / "baseline_completion.json").exists():
             return _student_run(config, verify_only=True)
+    # Existing manifest-verified legacy aliases remain readable, but creating a
+    # new alias must not manufacture a missing selected-checkpoint binding.
+    _check_student_summary(control_config, original, require_bound_selection=True)
     directory.mkdir(parents=True, exist_ok=True)
     write_json(directory / "baseline_alias.json", identity)
     for name in ("student.pt", "data.json", "history.json"):
@@ -268,6 +314,10 @@ def _reuse_control_student(config, control_config):
     for name in ("best.pt", "last.pt"):
         state = torch.load(source / name, map_location="cpu", weights_only=True)
         state["config"] = config.to_dict()
+        if name == "last.pt":
+            # The verified best tensors are unchanged, but rebasing config
+            # metadata changes the serialized file authenticated by last.pt.
+            state["selected_best_checkpoint_sha256"] = fingerprint(directory / "best.pt")
         save_checkpoint(directory / name, state)
     write_json(directory / "config.json", config.to_dict())
     summary = {**original, "name": config.name, "checkpoint": str(directory / "student.pt"),
@@ -278,12 +328,14 @@ def _reuse_control_student(config, control_config):
     return _student_run(config)
 
 
-def _target_classes(counts):
+def _target_classes(counts, *, long_tail=False):
+    """Follow the declared profile, not the realized equality of class counts."""
     if not counts or any(count <= 0 for count in counts):
         raise ValueError("Target selection requires positive training class counts")
-    if len(set(counts)) == 1:
+    if not long_tail:
         return tuple(range(len(counts)))
-    return tuple(sorted(range(len(counts)), key=lambda label: (counts[label], label))[:len(counts) // 2])
+    count = (len(counts) + 1) // 2
+    return tuple(sorted(range(len(counts)), key=lambda label: (counts[label], label))[:count])
 
 
 def _training_data_identity(provenance):
@@ -324,7 +376,7 @@ def _validate_checkpoint(config, split="val", output=None, *, targets=None):
             for _, labels in data.train:
                 for label, count in zip(*torch.unique(labels, return_counts=True)):
                     counts[int(label)] += int(count)
-        targets = _target_classes(counts)
+        targets = _target_classes(counts, long_tail=_effective_factor(config.data) > 1)
     metrics["target_classes"] = list(targets)
     metrics["target_macro_recall"] = statistics.mean(metrics["per_class"][i]["recall"] for i in targets)
     return metrics
@@ -346,7 +398,8 @@ def _report(spec, teachers, students, supervised, *, split, output=None):
     counts = read_json(Path(control.output_dir) / control.name / "summary.json")["class_counts"]
     if len(counts) != spec.teacher.data.num_classes:
         raise ValueError("Training class counts do not match the class vocabulary")
-    targets = repair_targets(spec, counts) if spec.repair is not None else _target_classes(counts)
+    targets = (repair_targets(spec, counts) if spec.repair is not None else
+               _target_classes(counts, long_tail=_effective_factor(spec.teacher.data) > 1))
     for recipe, config in teachers:
         metrics[config.name] = _validate_checkpoint(config, split, Path(output) / config.name if output else None,
                                                    targets=targets)
@@ -481,6 +534,10 @@ def _check_selection_rule(spec, selection, report):
 
 
 def run_study(spec, output, *, phase="train", dry_run=False):
+    from .shortcut_data import SHORTCUT_DATASETS
+    if spec.teacher.data.source in SHORTCUT_DATASETS:
+        from .shortcut_baselines import run_shortcut_study
+        return run_shortcut_study(spec, output, phase=phase, dry_run=dry_run)
     if phase not in {"plan", "train", "evaluate"}:
         raise ValueError("Unknown study phase")
     protocol = plan_study(spec, output)
@@ -508,6 +565,8 @@ def run_study(spec, output, *, phase="train", dry_run=False):
         report["interpretation"] = "All prespecified arms are reported; test results do not reselect the recipe."
         write_json(directory / "comparison.json", report)
         (directory / "report.md").write_text(_markdown(report))
+        evaluated_files = tuple(path.relative_to(directory).as_posix() for path in (directory / "test").rglob("*") if path.is_file())
+        write_manifest(directory, "evaluation_completion.json", ("comparison.json", "report.md", "study_completion.json", *evaluated_files))
         return {"status": "evaluated", "selection": selection["recipe"], "report": str(directory / "report.md")}
     if selection_path.exists():
         # A crash between atomic selection export and final manifest is recoverable:

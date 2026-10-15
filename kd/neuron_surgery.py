@@ -584,7 +584,8 @@ def train_repair_candidate(candidate: VisionModel, anchor: VisionModel, dataset:
                            feature_stages: tuple[str, ...] | None = None,
                            seed: int = 2026, precision: str = "auto",
                            channels_last: bool = True,
-                           fail_fast: bool = True) -> tuple[list[dict], dict]:
+                           fail_fast: bool = True,
+                           full_finetune: bool = False) -> tuple[list[dict], dict]:
     """Fine-tune only selected channel-connected weights under preservation losses."""
     if min(epochs, samples_per_epoch, batch_size) < 1:
         raise ValueError("Repair epochs, samples_per_epoch, and batch_size must be positive")
@@ -598,7 +599,10 @@ def train_repair_candidate(candidate: VisionModel, anchor: VisionModel, dataset:
     if type(candidate) is not type(anchor) or candidate.feature_channels != anchor.feature_channels:
         raise ValueError("Candidate and anchor must use the same repair architecture")
     feature_stages = localization_stages(candidate) if feature_stages is None else tuple(feature_stages)
-    masks = channel_parameter_masks(candidate, channels)
+    if not isinstance(full_finetune, bool):
+        raise ValueError("full_finetune must be a boolean")
+    masks = ({name: torch.ones_like(parameter, dtype=torch.bool) for name, parameter in candidate.named_parameters()}
+             if full_finetune else channel_parameter_masks(candidate, channels))
     before = {name: value.detach().cpu().clone() for name, value in candidate.state_dict().items()}
     target_sampler = WeightedRandomSampler(_balanced_weights(target_indices, labels), samples_per_epoch,
                                            replacement=True, generator=torch.Generator().manual_seed(seed))

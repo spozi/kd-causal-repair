@@ -11,16 +11,18 @@ from PIL import Image
 import torch
 from torch.nn import functional as F
 
-from kd.checkpoints import fingerprint, tensor_state_fingerprint, write_json
+from kd.baseline_artifacts import STUDENT_FILES, write_manifest
+from kd.checkpoints import fingerprint, save_checkpoint, tensor_state_fingerprint, write_json
 from kd.data import SyntheticImages, build_data
 from kd.engine import seed_everything
 from kd.models import create_model
 from kd.config import DataConfig, ModelConfig
-from kd.teacher_baselines import (_student_run, _target_classes, load_spec, plan_study,
+from kd.teacher_baselines import (_report, _student_run, _target_classes, load_spec, plan_study,
                                  run_study, smoke_spec, study_configs)
 from kd.teacher_repair_baseline import REPAIR_NAME, TeacherRepairOptions
 from kd.teacher_training import (RECIPES, TeacherRecipe, add_randaugment, mix_batch,
                                  sam_step, teacher_loss, train_teacher, update_ema)
+from kd.training_provenance import bind_training_data
 
 
 class TeacherLossTests(unittest.TestCase):
@@ -177,6 +179,108 @@ class TeacherBaselineStudyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "export differs"):
                 _student_run(config)
 
+    def test_unmanifested_student_checks_checkpoint_and_recorded_data_before_sealing(self):
+        for checkpoint_name in ("best.pt", "last.pt", "data.json"):
+            with self.subTest(checkpoint=checkpoint_name), tempfile.TemporaryDirectory() as root, \
+                    redirect_stdout(io.StringIO()):
+                spec = replace(smoke_spec(), recipes=("control",))
+                run_study(spec, root)
+                _, students, _ = study_configs(spec, root)
+                config = students[0][2]
+                directory = Path(root) / config.name
+                completion = directory / "baseline_completion.json"
+                completion.unlink()
+                path = directory / checkpoint_name
+                summary = json.loads((directory / "summary.json").read_text())
+                changed_data = {**summary["data"], "fixture_identity": "another-training-dataset"}
+                if checkpoint_name == "data.json":
+                    write_json(path, changed_data)
+                else:
+                    state = torch.load(path, weights_only=True)
+                    state["training_data_identity"] = bind_training_data(changed_data)
+                    save_checkpoint(path, state)
+                if checkpoint_name == "best.pt":
+                    # Keep the selected-file digest coherent to exercise the
+                    # independent best-data guard rather than only its hash.
+                    last_path = directory / "last.pt"
+                    last = torch.load(last_path, weights_only=True)
+                    last["selected_best_checkpoint_sha256"] = fingerprint(path)
+                    save_checkpoint(last_path, last)
+                before = {p.name: fingerprint(p) for p in directory.iterdir() if p.is_file()}
+                with patch("kd.teacher_baselines.write_manifest") as seal:
+                    with self.assertRaisesRegex(ValueError, "provenance changed"):
+                        _student_run(config)
+                seal.assert_not_called()
+                self.assertFalse(completion.exists())
+                self.assertEqual(before, {
+                    p.name: fingerprint(p) for p in directory.iterdir() if p.is_file()})
+
+    def test_unmanifested_student_rejects_matching_swapped_best_and_export(self):
+        with tempfile.TemporaryDirectory() as root, redirect_stdout(io.StringIO()):
+            spec = replace(smoke_spec(), recipes=("control",))
+            run_study(spec, root)
+            _, students, _ = study_configs(spec, root)
+            config = students[0][2]
+            directory = Path(root) / config.name
+            completion = directory / "baseline_completion.json"
+            completion.unlink()
+            best_path, export_path = directory / "best.pt", directory / "student.pt"
+            best = torch.load(best_path, weights_only=True)
+            exported = torch.load(export_path, weights_only=True)
+            name = next(name for name, value in best["student"].items()
+                        if value.is_floating_point())
+            best["student"][name].add_(0.1)
+            exported["student"][name] = best["student"][name].clone()
+            save_checkpoint(best_path, best)
+            save_checkpoint(export_path, exported)
+            with patch("kd.teacher_baselines.write_manifest") as seal:
+                with self.assertRaisesRegex(ValueError, "selected.*checkpoint|Selected.*checkpoint"):
+                    _student_run(config)
+            seal.assert_not_called()
+            self.assertFalse(completion.exists())
+
+    def test_unmanifested_student_requires_committed_selected_best_binding(self):
+        with tempfile.TemporaryDirectory() as root, redirect_stdout(io.StringIO()):
+            spec = replace(smoke_spec(), recipes=("control",))
+            run_study(spec, root)
+            _, students, _ = study_configs(spec, root)
+            config = students[0][2]
+            directory = Path(root) / config.name
+            completion = directory / "baseline_completion.json"
+            completion.unlink()
+            last_path = directory / "last.pt"
+            last = torch.load(last_path, weights_only=True)
+            last.pop("selected_best_checkpoint_sha256", None)
+            save_checkpoint(last_path, last)
+            with patch("kd.teacher_baselines.write_manifest") as seal:
+                with self.assertRaisesRegex(ValueError, "selected.*checkpoint|Selected.*checkpoint"):
+                    _student_run(config)
+            seal.assert_not_called()
+            self.assertFalse(completion.exists())
+
+    def test_manifest_verified_legacy_student_is_readable_without_resealing(self):
+        with tempfile.TemporaryDirectory() as root, redirect_stdout(io.StringIO()):
+            spec = replace(smoke_spec(), recipes=("control",))
+            run_study(spec, root)
+            _, students, _ = study_configs(spec, root)
+            config = students[0][2]
+            directory = Path(root) / config.name
+            # A fixture for the prior completed schema, not migration of a real
+            # experiment: its existing manifest still authenticates every byte.
+            for checkpoint_name in ("best.pt", "last.pt"):
+                checkpoint = directory / checkpoint_name
+                state = torch.load(checkpoint, weights_only=True)
+                state.pop("selected_best_checkpoint_sha256", None)
+                state.pop("training_data_identity", None)
+                save_checkpoint(checkpoint, state)
+            write_manifest(directory, "baseline_completion.json", STUDENT_FILES)
+            before = fingerprint(directory / "baseline_completion.json")
+            with patch("kd.teacher_baselines.write_manifest") as seal:
+                summary = _student_run(config, verify_only=True)
+            seal.assert_not_called()
+            self.assertEqual(Path(summary["checkpoint"]).resolve(), (directory / "student.pt").resolve())
+            self.assertEqual(before, fingerprint(directory / "baseline_completion.json"))
+
     def test_selection_export_crash_can_be_recovered(self):
         with tempfile.TemporaryDirectory() as root, redirect_stdout(io.StringIO()):
             spec = replace(smoke_spec(), recipes=("control",))
@@ -189,8 +293,43 @@ class TeacherBaselineStudyTests(unittest.TestCase):
             self.assertTrue((Path(root) / "study_completion.json").is_file())
 
     def test_generic_training_counts_select_lowest_frequency_half(self):
-        self.assertEqual(_target_classes([20, 10, 3, 1]), (3, 2))
+        self.assertEqual(_target_classes([20, 10, 3, 1], long_tail=True), (3, 2))
         self.assertEqual(_target_classes([10, 10, 10, 10]), (0, 1, 2, 3))
+
+    def test_long_tail_targets_round_up_and_break_ties_by_label(self):
+        self.assertEqual(_target_classes([100, 20, 20, 5, 5], long_tail=True), (3, 4, 1))
+        # Tiny long-tail splits can realize equal counts without becoming balanced.
+        self.assertEqual(_target_classes([1] * 5, long_tail=True), (0, 1, 2))
+
+    def test_balanced_targets_include_naturally_unequal_classes(self):
+        self.assertEqual(_target_classes([8, 6, 4, 2]), (0, 1, 2, 3))
+        for counts in ([], [1, 0], [1, -1]):
+            with self.subTest(counts=counts), self.assertRaisesRegex(ValueError, "positive"):
+                _target_classes(counts)
+
+    def test_generic_report_targets_follow_declared_and_legacy_profiles(self):
+        unequal = [100, 20, 20, 5, 5, 2, 1]
+        cases = (("balanced", 1, unequal, list(range(7))),
+                 ("lt-if10", 1, unequal, [6, 5, 3, 4]),
+                 ("lt-if100", 1, [1] * 7, [0, 1, 2, 3]),
+                 ("balanced", 100, unequal, [6, 5, 3, 4]))
+        metrics = {name: 0.5 for name in ("accuracy", "balanced_accuracy", "target_macro_recall",
+                                         "nll", "brier_score", "ece_15_bins")}
+        for profile, factor, counts, targets in cases:
+            with self.subTest(profile=profile, factor=factor), tempfile.TemporaryDirectory() as root:
+                base = smoke_spec()
+                data = replace(base.teacher.data, source="dermamnist", num_classes=7, image_size=32,
+                               dataset_profile=profile, imbalance_factor=factor)
+                spec = replace(base, recipes=("control",), teacher=replace(base.teacher, data=data))
+                teachers, students, supervised = study_configs(spec, root)
+                control = teachers[0][1]
+                (Path(root) / control.name).mkdir()
+                write_json(Path(root) / control.name / "summary.json", {"class_counts": counts})
+                with patch("kd.teacher_baselines._validate_checkpoint", return_value=metrics) as validate, \
+                        patch("kd.teacher_baselines._seconds", return_value=0):
+                    report = _report(spec, teachers, students, supervised, split="val")
+                self.assertEqual(report["target_classes"], targets)
+                self.assertTrue(all(list(call.kwargs["targets"]) == targets for call in validate.call_args_list))
 
     def test_imagefolder_report_uses_actual_training_counts(self):
         with tempfile.TemporaryDirectory() as root, redirect_stdout(io.StringIO()):
@@ -207,8 +346,9 @@ class TeacherBaselineStudyTests(unittest.TestCase):
             run_study(spec, Path(root) / "study")
             report = json.loads((Path(root) / "study/validation.json").read_text())
             self.assertEqual(report["train_per_class"], [8, 6, 4, 2])
-            self.assertEqual(report["target_classes"], [3, 2])
-            self.assertTrue(all(row["target_classes"] == [3, 2] for row in report["per_run"].values()))
+            self.assertEqual(report["target_classes"], [0, 1, 2, 3])
+            self.assertTrue(all(row["target_classes"] == [0, 1, 2, 3]
+                                for row in report["per_run"].values()))
 
     def test_invalid_recipes_seeds_and_interventions_fail(self):
         spec = smoke_spec()
@@ -423,6 +563,8 @@ class TeacherRepairIntegrationTests(unittest.TestCase):
                              fingerprint(output / "teacher_control_seed41/student.pt"))
             alias = output / "kd_teacher_repair_teacher41_seed42"
             self.assertTrue((alias / "baseline_alias.json").is_file())
+            last = torch.load(alias / "last.pt", weights_only=True)
+            self.assertEqual(last["selected_best_checkpoint_sha256"], fingerprint(alias / "best.pt"))
             with patch("kd.teacher_baselines.run_experiment", side_effect=AssertionError("retraining")):
                 self.assertEqual(run_study(spec, output), result)
                 self.assertEqual(run_study(spec, output, phase="evaluate")["status"], "evaluated")

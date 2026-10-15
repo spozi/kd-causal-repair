@@ -37,6 +37,7 @@ def _ensure_rgb(image: Image.Image) -> Image.Image:
 def normalization(source: str):
     # Fixed [-1, 1] scaling for CIFAR: no validation/test statistics are fitted.
     fixed = {
+        "colored_mnist": ((0.5,) * 3, (0.5,) * 3),
         "cifar10": ((0.5,) * 3, (0.5,) * 3),
         "cifar100": ((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
         "svhn": ((0.5,) * 3, (0.5,) * 3),
@@ -153,6 +154,7 @@ class DataBundle:
     test: DataLoader | None = None
     provenance: dict = field(default_factory=dict)
     confirmation: DataLoader | None = None
+    test_endpoints: dict | None = None
 
 
 def seed_worker(worker_id: int) -> None:
@@ -249,6 +251,8 @@ def long_tailed_subset(targets, indices: list[int], factor: float, seed: int) ->
 
 
 def _effective_factor(data: DataConfig) -> float:
+    if data.dataset_profile == "native-shortcut":
+        return 1.0
     return PROFILES[data.dataset_profile] if data.dataset_profile != "balanced" else data.imbalance_factor
 
 
@@ -341,6 +345,11 @@ def _freeze_split_indices(root: Path, profile: str, train_indices: list[int],
 def build_data(data: DataConfig, train: TrainConfig, *, include_test: bool = True,
                include_confirmation: bool = False, diagnostic: bool = False) -> DataBundle:
     """Build stable splits; diagnostic mode uses canonical transforms and ordering."""
+    from .shortcut_data import SHORTCUT_DATASETS, build_shortcut_data
+    if data.source in SHORTCUT_DATASETS:
+        if include_confirmation:
+            raise ValueError("Shortcut datasets have no confirmation partition")
+        return build_shortcut_data(data, train, include_test=include_test, diagnostic=diagnostic)
     splits = {}
     provenance = {"source": data.source, **_catalog_provenance(data)}
     if data.source == "synthetic":
