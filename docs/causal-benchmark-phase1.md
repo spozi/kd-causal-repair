@@ -1,5 +1,23 @@
 # Shortcut subset: teacher repair and knowledge distillation
 
+## Current scope (16 October 2026)
+
+**MultiCelebA replaces UrbanCars in new default plans.** Current shortcut scope:
+Colored MNIST, Waterbirds, and the author two-bias MultiCelebA setting
+(`High_Cheekbones` target; `Young`, `Male` nuisance attributes; eight
+class-by-attribute groups). MultiCelebA uses aligned CelebA images, the author
+training-cell caps, official validation/test, and 224-pixel ImageNet-normalized
+views with pretrained ResNet-34/18. Only baseline/KD is supported for MultiCelebA;
+facial-attribute repair is not validated and is rejected. See the canonical
+[experiment settings](experiment-settings.md) for exact construction and defaults.
+[Author code](https://github.com/Nayeong-V-Kim/multiple_spurious_correlation_by_MOO).
+
+The design notes below preserve the earlier UrbanCars research/repair rationale.
+They describe the retained legacy option, not the current default roster.
+Existing runs and the active Colored MNIST deployment remain unchanged.
+
+## Historical design notes (UrbanCars retained as an opt-in legacy adapter)
+
 Shortcut design selected: 14 October 2026; full scope clarified: 15 October 2026.
 **Implemented protocol defaults, not a completed full-budget experiment.** This
 companion covers Colored MNIST, Waterbirds, and UrbanCars within the

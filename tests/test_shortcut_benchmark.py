@@ -71,6 +71,26 @@ def urban_release(root):
                     Image.new("L", (256, 256), 255).save(directory / "000_mask.png")
 
 
+def multiceleba_release(root):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "img_align_celeba").mkdir()
+    attrs, splits = [], []
+    for split in range(3):
+        for y in (0, 1):
+            for young in (0, 1):
+                for male in (0, 1):
+                    name = f"{len(attrs) + 1:06d}.jpg"
+                    Image.new("RGB", (178, 218), (split * 60, y * 100, young * 100 + male)).save(root / "img_align_celeba" / name)
+                    attrs.append([name, 2*y-1, 2*young-1, 2*male-1])
+                    splits.append([name, split])
+    for name, header, rows in (("list_attr_celeba.csv", ["image_id", "High_Cheekbones", "Young", "Male"], attrs),
+                               ("list_eval_partition.csv", ["image_id", "partition"], splits)):
+        with (root / name).open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(header)
+            writer.writerows(rows)
+
+
 def small_cmnist_spec(root, *, repair=False):
     from kd.teacher_baseline_matrix import _shortcut_job
     from kd.config import BenchmarkConfig
@@ -239,7 +259,9 @@ class FullPlannerTests(unittest.TestCase):
             plan = materialize_matrix_plan(root / "plan", root=root / "data", dry_run=True)
             self.assertEqual(len(plan["datasets"]), 16)
             self.assertEqual(plan["job_count"], 55)
-            self.assertEqual(plan["counts"]["total_fits_max"], 3153)
+            self.assertEqual(plan["counts"]["total_fits_max"], 3117)
+            self.assertIn("multiceleba", plan["datasets"])
+            self.assertNotIn("urbancars", plan["datasets"])
             expanded = plan_matrix(root / "expanded", root=root / "data", pairs=("resnet34_resnet18_smallstem_imagenet", "convnet6"))
             self.assertEqual(expanded["job_count"], 107)
             self.assertEqual(list(root.iterdir()), [])
@@ -254,7 +276,7 @@ class FullPlannerTests(unittest.TestCase):
                 spec = load_spec(job["config"])
                 self.assertEqual(spec.to_dict(), job["study"])
                 self.assertEqual(spec.teacher.train.selection_metric, "worst_group_accuracy")
-                self.assertEqual(len(mechanism_conditions(spec)), 3)
+                self.assertEqual(len(mechanism_conditions(spec)), 0 if job["dataset"] == "multiceleba" else 3)
                 _, students, supervised = study_configs(spec, job["output"])
                 if job["dataset"] != "colored_mnist":
                     self.assertEqual(spec.teacher.student.weights, "IMAGENET1K_V1")
@@ -359,13 +381,15 @@ class ShortcutLifecycleTests(unittest.TestCase):
         state34, state18 = models.resnet34(weights=None).state_dict(), models.resnet18(weights=None).state_dict()
         from kd.config import BenchmarkConfig
         from kd.teacher_baseline_matrix import _shortcut_job
-        for source in ("waterbirds", "urbancars"):
+        for source in ("waterbirds", "urbancars", "multiceleba"):
             with self.subTest(source=source), tempfile.TemporaryDirectory() as temp, contextlib.redirect_stdout(io.StringIO()), \
                  patch.object(models.ResNet34_Weights, "get_state_dict", return_value=state34), \
                  patch.object(models.ResNet18_Weights, "get_state_dict", return_value=state18):
                 root = Path(temp)
                 if source == "waterbirds":
                     waterbirds_release(root / "data" / source / "1.0", per_group=1)
+                elif source == "multiceleba":
+                    multiceleba_release(root / "data" / source / "1.0")
                 else:
                     urban_release(root / "data" / source / "1.0")
                 raw = _shortcut_job(source, root=root / "data", device="cpu", precision="float32", workers=0,

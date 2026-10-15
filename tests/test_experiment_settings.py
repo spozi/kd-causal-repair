@@ -94,7 +94,7 @@ class ExperimentSettingsTests(unittest.TestCase):
                     self.assertEqual(train.epochs, PROFILES[job["profile"]][1])
                     self.assertEqual((train.batch_size, train.learning_rate, train.momentum,
                                       train.weight_decay, train.threads), (128, 0.05, 0.9, 0.0005, 4))
-                    self.assertEqual((train.device, train.precision, train.workers), ("auto", "float32", 0))
+                    self.assertEqual((train.device, train.precision, train.workers), ("auto", "bfloat16", 0))
                     self.assertEqual((train.cuda_mode, train.channels_last, train.persistent_workers,
                                       train.prefetch_factor), ("fast", True, False, 2))
                     self.assertEqual((config.benchmark.warmup, config.benchmark.iterations), (20, 100))

@@ -4,17 +4,19 @@ A classification implementation of [the project guidelines](knowledge-distillati
 
 [Experiment settings](docs/experiment-settings.md) defines the implemented **full
 16-dataset experiment**: the original 13 class/long-tail datasets plus
-**Colored MNIST, Waterbirds, and UrbanCars**. The
+**Colored MNIST, Waterbirds, and MultiCelebA**. The
 [shortcut companion](docs/causal-benchmark-phase1.md) defines subgroup outcomes,
 teacher-to-student transfer, and research/adaptation boundaries. The planner now
-includes all 16, with native group-aware repair/selection and mechanism controls
-on the three additions. The original 13 datasets now default to ImageNet-pretrained
+includes all 16, with group-aware selection on the three additions; repair and
+mechanism controls apply only to Colored MNIST/Waterbirds. MultiCelebA is baseline/KD-only.
+UrbanCars remains an explicit legacy option, excluded from new defaults.
+The original 13 datasets now default to ImageNet-pretrained
 adapted small-stem ResNet-34 teachers and ResNet-18 students (`IMAGENET1K_V1`)
 at the original 32-pixel input size. Their 7×7 pretrained stem filters are resized
 to 3×3 with per-filter L2-norm preservation; stride is 1 and max-pooling is removed.
 Remaining pretrained backbone tensors are retained; classifier heads are new.
-Colored MNIST retains its 32-pixel from-scratch ConvNet pair; Waterbirds/UrbanCars retain
-their pretrained pair at 224/256 pixels. Provision local releases before training.
+Colored MNIST retains its 32-pixel from-scratch ConvNet pair; Waterbirds/MultiCelebA use
+their pretrained pair at 224 pixels. Provision local releases before training.
 From-scratch 32-pixel presets remain optional. Full-budget results are not measured. Historical settings and
 saved results remain unchanged.
 
@@ -27,10 +29,14 @@ freezes validation selection before test access, and documents recent 2025–202
 follow-up methods. Inspect all 16 datasets (four profiles on the original 13,
 one native setting on each addition) without writes or
 training using `python -m kd.teacher_baseline_matrix plan --output
-runs/teacher-baselines-v7/matrix-plan --epochs 100 --dry-run`. Add
+runs/teacher-baselines-bf16/matrix-plan --epochs 100 --dry-run`. Add
 `--pairs resnet34_resnet18_smallstem_imagenet convnet6` for the primary plus compact reference.
 New matrix runs use 100 teacher/student epochs uniformly and 20 repair epochs;
-historical budgets stay frozen. Generated configs bind their parent plan and
+historical budgets stay frozen. New baseline plans use explicit BF16 CUDA mixed
+precision for teachers and students, including evaluation. Use `--precision float32`
+for a fresh CPU/debug plan. Keep FP32 and BF16 output trees separate; completed
+FP32 experiments are not converted. See the [BF16 execution policy](docs/experiment-settings.md#321-bf16-execution-policy-for-new-baseline-runs).
+Generated configs bind their parent plan and
 computational sources before execution. Interrupted training requires new
 checkpoint-bound data provenance and a committed `last.pt` digest of the selected
 `best.pt`; unsealed legacy training checkpoints without those bindings cannot

@@ -1,9 +1,9 @@
 # Experiment settings: teacher training, repair, and knowledge distillation
 
-Full-scope and pretrained-default update: 15 October 2026 (`kd-baseline`).
+Full-scope update: 16 October 2026 (`kd-baseline`); MultiCelebA replaces UrbanCars in new default plans.
 
 The implemented **full experiment includes 16 datasets**: the original 13 datasets
-plus Colored MNIST, Waterbirds, and UrbanCars. All belong to one teacher-quality,
+plus Colored MNIST, Waterbirds, and MultiCelebA. All belong to one teacher-quality,
 teacher-repair, and downstream knowledge-distillation (KD) benchmark. The three
 shortcut datasets are an additional evaluation family, not a replacement for
 the original datasets or a separate deferred experiment.
@@ -11,7 +11,7 @@ the original datasets or a separate deferred experiment.
 | Evaluation family | Dataset count | Conditions / primary student score | Execution status |
 |---|---:|---|---|
 | Class / long-tail | 13 | Four class profiles; pretrained ResNet-34 -> ResNet-18 at 32 pixels; accuracy for `balanced`, class-balanced accuracy for long-tail | Primary transfer protocol implemented; compact presets retained separately |
-| Shortcut / nuisance groups | 3 | Native shortcut construction, no IF profiles; worst-group accuracy | Adapters, group selection, repair and mechanism controls implemented; provision real data before running |
+| Shortcut / nuisance groups | 3 | Native shortcut construction, no IF profiles; worst-group accuracy | Baseline/KD on all three; repair/controls only on Colored MNIST and Waterbirds; provision real data before running |
 | Full experiment | 16 | Both families, with their declared resolutions and metrics | Planner, preflight, execution/resume and overview reporting implemented; full-budget results not measured |
 
 Sections 1-10 describe the combined experiment. Appendix A contains the optional
@@ -66,7 +66,7 @@ metadata, renderer and split identities are hashed in run provenance.
 | STL-10 | `stl10` / `1.0` | 10 | RGB `3 x 32 x 32` | Class profiles | A, labeled training only | Available; pretraining-overlap warning |
 | Colored MNIST | `colored_mnist` / adapter `1.0`, torchvision MNIST + pinned renderer | 2 | RGB `3 x 32 x 32` adaptation | Native shortcut | E | Available |
 | Waterbirds | `waterbirds` / adapter `1.0`, local released CSV/images | 2 | RGB `3 x 224 x 224` | Native shortcut | F | Available |
-| UrbanCars | `urbancars` / adapter `1.0`, local author-layout composites | 2 | RGB `3 x 256 x 256` | Native shortcut | G | Available |
+| MultiCelebA (two biases) | `multiceleba` / adapter `1.0`, aligned CelebA images + attributes/partitions | 2 | RGB `3 x 224 x 224` adaptation | Native shortcut | G | Baseline/KD available; repair disabled |
 
 `Available` means existing implementation, not a newly completed full-budget
 run or a completed hardware preflight. The three added inputs/pairings are
@@ -83,8 +83,9 @@ Sources: [retained dataset catalog](../kd/catalog/v1.json) and
 - **E:** Split underlying official MNIST training images before coloring; derive
   validation only from training environments; official test digits reserved.
 - **F:** Released Waterbirds split metadata; no re-stratification or IF resampling.
-- **G:** Released/author-defined UrbanCars partitions and group mapping; pin the
-  artifact or generation recipe, not a presumed Waterbirds-style metadata file.
+- **G:** Author's two-bias MultiCelebA training subset within official CelebA train;
+  official validation/test remain unresampled. Target `High_Cheekbones`, nuisance
+  attributes `Young`, `Male`. No synthetic composite generation is needed.
 
 The class family uses split seed `2026`; profile sampling affects train and
 validation only. Test partitions retain native distributions and are not
@@ -96,8 +97,9 @@ environments and rendering independently of model seeds. Colored MNIST uses a
 stratified 10% holdout of official training digits before coloring. Train and
 validation must each contain every required group. Waterbirds rejects duplicate
 composite paths and foreground reuse across partitions. Its background lineage
-is unavailable unless supplied; UrbanCars' released files do not export original
-constituent IDs. These limitations are recorded, not treated as a complete
+is unavailable unless supplied. MultiCelebA validates unique image IDs and joins
+partitions by filename; it does not claim person-disjoint splits or audited
+pretraining disjointness. These limitations are recorded, not treated as a complete
 source-disjointness or counterfactual audit. In every family,
 test images cannot enter fitting, localization, companion matching, or selection.
 Record actual counts, class/group ordering, archive identities, and split hashes.
@@ -117,7 +119,30 @@ Sources: [CINIC-10 authors](https://github.com/BayesWatch/cinic-10),
 |---|---|---|---|
 | Colored MNIST | Observed label x color: 4; retain environment ID separately | Training mismatch probabilities `0.2/0.1`; validation derives only from those environments | Reversed color (`0.9` mismatch) and unbiased color (`0.5` mismatch) on the same official test digits |
 | Waterbirds | Bird label x land/water background: 4 | Released train/validation composition | Released test |
-| UrbanCars | Vehicle label x background x co-object category: 8 | Released/author-defined train/validation composition | Released/author-defined test |
+| MultiCelebA | High_Cheekbones x Young x Male: 8; ID `4*y + 2*Young + Male` | Author two-bias training subset; official validation, unresampled | Official CelebA test, unresampled |
+
+MultiCelebA uses the [author's two-bias construction](https://github.com/Nayeong-V-Kim/multiple_spurious_correlation_by_MOO/blob/main/data/multi_celebA_dataset.py).
+Within official training images, select in ascending filename order per
+`(High_Cheekbones, Young, Male)` cell: `(1,1,0)` all; `(1,1,1)` 2,200;
+`(1,0,0)` 2,200; `(1,0,1)` 110; `(0,1,0)` 40; `(0,1,1)` 800;
+`(0,0,0)` 800; `(0,0,1)` 16,220. These are caps, not oversampling targets.
+Verified provisioning on 16 October 2026 yields **66,952 training images**:
+classes `[17,860,49,092]`, and groups in the ID order above
+`[800,16220,40,800,2200,110,44582,2200]`. The uncapped cell has 44,582
+images; the upstream code's 44,528-image comment is stale (it previously implied
+an estimated 66,898 total). Selection rules/caps are unchanged. Record actual
+counts and metadata hashes on every deployment rather than trusting comments.
+The source pool is 202,599 aligned CelebA images, native width 178 x height 218;
+official validation/test have 19,867/19,962 images. Download the aligned JPEG ZIP
+(approximately 1.4 GB), not CelebA-HQ or the in-the-wild archive. Reserve about
+5 GB for archive, extraction, annotations and filesystem overhead (planning
+allowance, not a measured installed size). Research-only acquisition terms apply.
+Sources: [CelebA](https://mmlab.ie.cuhk.edu.hk/projects/CelebA.html),
+[two-bias paper](https://arxiv.org/abs/2409.03303).
+
+UrbanCars is retained as an explicitly requested legacy adapter, not a seventeenth
+default dataset. Existing plans/results are not renamed or rewritten. New default
+plans retain 16 datasets, with MultiCelebA occupying the former UrbanCars slot.
 
 Colored MNIST uses digit `0-4` versus `5-9` with label-flip probability
 `0.25`. Primary classification/group metrics use noisy observed labels; clean
@@ -146,7 +171,7 @@ that formula to the three added datasets merely because they share the roster.
 |---|---|---|
 | Colored MNIST | Resize digit to `32 x 32`; intensity in red or green, blue zero; tensor conversion; normalize RGB mean/std `(0.5,0.5,0.5)`; no crop/flip/recoloring | Same canonical view; only the prespecified test color renderer changes |
 | Waterbirds | Resize to `256 x 256`, center crop `224 x 224`, tensor conversion, ImageNet normalization; no base horizontal flip | Same canonical view |
-| UrbanCars | Require native `256 x 256`; horizontal flip `p=0.5`, tensor conversion, ImageNet normalization; no resize/crop | No flip; retain native dimensions |
+| MultiCelebA | Center crop `178 x 178` from aligned images; resize to `224 x 224`; tensor conversion, ImageNet normalization; no base flip | Same canonical view |
 | ImageNet normalization | Mean `(0.485,0.456,0.406)`, std `(0.229,0.224,0.225)` | Identical normalization |
 | Extra teacher augmentation | Section 6's explicit recipe; Colored MNIST RandAugment allows only Identity/Brightness/Contrast/Sharpness, avoiding implicit hue/color removal | No extra recipe augmentation |
 
@@ -171,7 +196,7 @@ a teacher's Mixup, CutMix, RandAugment, or EMA intervention.
 | Original 13 datasets, optional compact reference | ConvNet-6-W32 -> ConvNet-6-W16 | `convnet6_w32` / `convnet6_w16`; `convnet6` preset, 32 pixels, from scratch |
 | Original 13 datasets, optional compact ResNet reference | ResNet-34 -> ResNet-18 | `resnet34_smallstem` / `resnet18_smallstem`; `resnet34_resnet18` preset, 32 pixels, from scratch |
 | Colored MNIST | ConvNet-6-W32 -> ConvNet-6-W16 | `convnet6_w32` / `convnet6_w16`, from scratch |
-| Waterbirds and UrbanCars | ResNet-34 -> ResNet-18 | `resnet34` / `resnet18`, ordinary stems, both initialized with named ImageNet weights |
+| Waterbirds and MultiCelebA | ResNet-34 -> ResNet-18 | `resnet34` / `resnet18`, ordinary stems, both initialized with named ImageNet weights |
 
 Architectures are not dataset-bound: each is fitted independently with the
 declared class count/order. The table specifies comparison choices, not model
@@ -206,19 +231,66 @@ maps are `32/16/8/4`, rather than the ordinary stem's `8/4/2/1`.
 | Original 13 datasets, primary pair | Named torchvision `ResNet34_Weights.IMAGENET1K_V1` / `ResNet18_Weights.IMAGENET1K_V1`, adapted stems as above; new seeded class-count-specific heads; full-network fine-tuning; SGD LR `0.001`, momentum `0.9`, decay `0.0005`, batch `128`, cosine | Implemented; not the frozen TPAMI/from-scratch settings |
 | Optional compact pairs | From scratch; SGD LR `0.05`, momentum `0.9`, decay `0.0005`, batch `128`, cosine | Retained in Appendix A.3 |
 | Colored MNIST teacher/students | From scratch; SGD LR `0.05`, momentum `0.9`, decay `0.0005`, batch `128`, cosine | Implemented |
-| Waterbirds / UrbanCars teacher/students | Torchvision `ResNet34_Weights.IMAGENET1K_V1` / `ResNet18_Weights.IMAGENET1K_V1`; seeded new two-class heads; SGD LR `0.001`, momentum `0.9`, decay `0.0005`, batch `32`, cosine | Implemented; weight retrieval occurs only when training is explicitly launched |
+| Waterbirds / MultiCelebA teacher/students | Torchvision `ResNet34_Weights.IMAGENET1K_V1` / `ResNet18_Weights.IMAGENET1K_V1`; seeded new two-class heads; SGD LR `0.001`, momentum `0.9`, decay `0.0005`, batch `32`, cosine | Implemented; weight retrieval occurs only when training is explicitly launched |
 | Shortcut repair | Section 5.2's group-balanced replay, six-candidate grid and preservation limits; SGD momentum `0.9`, no decay, cosine | Implemented |
+
+Colored MNIST exception (16 October 2026): the `mse_logits` **teacher only** uses
+SGD LR `0.005`, explicitly frozen as `teacher_learning_rates={"mse_logits":0.005}`.
+All other Colored MNIST teachers, KD students (including KD from this teacher),
+and supervised students retain LR `0.05`. Other datasets are unchanged. This is
+a post-failure numerical-stability amendment, not a test-score-tuned choice:
+training-only diagnostics diverged at LR `0.05` in both BF16 and FP32 within six
+batches, while LR `0.005` remained finite for one full 422-batch epoch in both.
+The shared-rate study and amended-rate study are not identical optimization
+protocols; disclose the exception with results. Existing frozen protocols must
+not be silently overwritten. A documented amendment must preserve the old
+protocol, failed-arm records, source hashes, and unchanged completed teachers.
 
 The 100/20 budgets are implemented across both families, not convergence guarantees or literature-optimal
 epochs. Validation-only tuning needs a prespecified, comparable search budget.
 Report actual examples, optimizer updates, gradient passes, and search cost.
 The planner's `--epochs` option configures teacher/student budgets for both
-families; repair remains `20`. Default runtime is device `auto`, float32, workers
+families; repair remains `20`. New baseline plans default to device `auto`, explicit
+`bfloat16` mixed precision, workers
 `0`, threads `4`. Initial tensor digests must match within each role/seed across
 arms. Pretrained runs additionally record the named release, URL and pretrained
 tensor-state digest; cached weight files are hashed and checked against their
 advertised filename hash prefix. Exported teachers are loaded from their frozen
 checkpoints for KD/evaluation, without re-downloading pretrained weights.
+
+### 3.2.1. BF16 execution policy for new baseline runs
+
+New matrix plans and the standalone pilot configs request `bfloat16` for teacher,
+supervised-student and KD training, checkpoint-selection validation, final
+evaluation and inference profiling. This is CUDA AMP: model parameters and SGD
+state remain FP32; eligible forward operations use BF16, loss reductions retain
+their stable FP32 paths, and BF16 does not enable a gradient scaler. Prediction
+archives continue storing FP32 probabilities, not BF16 NumPy arrays. See
+[PyTorch's AMP guidance](https://docs.pytorch.org/docs/stable/amp.html).
+
+Explicit BF16 requires a CUDA device with native BF16 support. It fails rather
+than silently switching a comparison to FP16/FP32. Planning/dry-run remains
+hardware-independent. For CPU/MPS debugging or an FP32 reference, create a new
+plan with `--precision float32` (and the intended `--device`). Standalone unbound
+studies also accept `--precision`; keep overrides identical across train/evaluate.
+Matrix-bound studies reject changed precision and require a fresh parent plan.
+
+Use a fresh output tree, such as `runs/teacher-baselines-bf16/`, for BF16. Existing
+FP32 protocols, results, prediction backups and checkpoints remain FP32 evidence;
+do not relabel, resume as BF16, or pool them with a BF16 comparison. Keep the same
+declared precision across comparison arms. Repair localization/diagnostics retain
+their separately documented FP32 policy; this change neither enables nor runs
+repair. Historical main-matrix defaults are unchanged.
+
+Before a new GPU study, run:
+
+```bash
+python -m kd cuda-check --device cuda:0 --precision bfloat16
+```
+
+Hardware-gated teacher/SAM/KD/evaluation smoke tests are available via
+`python -m unittest discover -s tests -p 'test_bfloat16_baselines.py' -v`; CPU-only
+passes are not CUDA-kernel validation or evidence of speedup/accuracy parity.
 
 ### 3.3. Literature pairings and implementation status
 
@@ -293,7 +365,7 @@ Source: [distillation losses](../kd/losses.py).
 
 ## 5. Teacher repair
 
-Every dataset compares its validation-selected CE teacher with its repaired form
+Every repair-enabled dataset compares its validation-selected CE teacher with its repaired form
 under matched downstream KD. Repair losses/channel masks share the method
 reference in Appendix A.4, but targeting and selection follow the dataset family.
 
@@ -313,7 +385,11 @@ robustness result.
 
 ### 5.2. Implemented shortcut-family repair
 
-The following adaptations apply to Colored MNIST, Waterbirds, and UrbanCars.
+The following adaptations apply to Colored MNIST and Waterbirds (and explicitly
+requested legacy UrbanCars runs). MultiCelebA is baseline/KD-only: repair and
+mechanism controls are disabled, and attempts to enable repair fail validation.
+Facial-attribute changes are not validated label-preserving interventions; do not
+reuse UrbanCars' background/co-object repair assumptions for faces.
 The following are frozen generator defaults; standalone changes require a new
 protocol. Sources: [group repair](../kd/shortcut_repair.py) and
 [group-aware study](../kd/shortcut_baselines.py).
@@ -408,7 +484,8 @@ tie order before training; class-family eligibility changes require a fresh plan
 and corresponding implementation rather than silently changing the generator.
 
 The `teacher_repair` recipe follows Section 5: Appendix A.4's class
-repair for the original 13, and Section 5.2's group repair for the other three.
+repair for the original 13, and Section 5.2's group repair for Colored MNIST and
+Waterbirds. It is absent for MultiCelebA.
 Do not silently reuse the retained catalog's RandAugment operation policies for
 the three new datasets
 (Appendix A.5). FP16 SAM, including auto-resolved FP16, is rejected by the
@@ -429,7 +506,7 @@ Bayesian teachers remain researched, unimplemented follow-ups. Sources:
 | Attribution-only repair | Test localization without causal-ablation screening |
 | Full causal-screened repair | Complete method; the same fitted condition as Section 6.1's repaired teacher |
 
-These three additional controls are implemented for the shortcut family.
+These three additional controls apply to Colored MNIST and Waterbirds, not MultiCelebA.
 Give them the same CE anchor, group-label access, fitting pools, companion/matching
 access, validation objective, and declared candidate/update budgets. If extended
 to class-family settings, declare that additional scope explicitly. Report
@@ -469,13 +546,15 @@ Define the primary score `M` **per setting**, not as one interchangeable score:
 |---|---|---|
 | Original dataset / `balanced` | Raw accuracy | Class-balanced accuracy, target macro recall, calibration |
 | Original dataset / `lt-if10/50/100` | Class-balanced accuracy (BAcc) | Raw accuracy, target macro recall, calibration |
-| Colored MNIST / Waterbirds / UrbanCars | Worst-group accuracy (WGA): `min_g(correct_g / n_g)` | Raw/group-balanced accuracy, each group's count/accuracy, nuisance diagnostics |
+| Colored MNIST / Waterbirds / MultiCelebA | Worst-group accuracy (WGA): `min_g(correct_g / n_g)` | Raw/group-balanced accuracy, each group's count/accuracy, nuisance metadata |
 
 Group-balanced accuracy is the unweighted mean of group accuracies; it is not
 class-balanced accuracy. An absent required group makes full-group WGA
 unavailable, never silently omitted or assigned zero. Use Section 1.3's observed
 label policy for Colored MNIST. Literature-weighted accuracy is distinct from
-raw accuracy. UrbanCars additionally reports the author's ID-weighted score:
+raw accuracy. MultiCelebA uses eight class-by-attribute groups; this is the
+project's WGA endpoint, not an assertion that it reproduces every grouping or
+weighted score in the MOO paper. Legacy UrbanCars additionally reports the author's ID-weighted score:
 equal-class means in four background/co-object agreement slices, weighted by the
 fixed independent `0.95/0.95` mixture. Each shortcut gap is its shifted slice
 score **minus** that ID score (negative usually denotes degradation). Actual
@@ -536,15 +615,17 @@ three shortcut datasets retain their declared single pair. Colored MNIST has
 one training setting and two correlated test panels.
 
 Do not multiply all 16 by four profiles. Maximum fresh-fit counts (one teacher
-seed and three paired students) are `3,153` for the default full plan and `6,057`
-for the primary plus compact ConvNet pair, including the three mechanism controls on each
-shortcut dataset. The shortcut family adds at most `249` fits: `33` ordinary
-teachers + `72` repair candidates + `135` KD students + `9` supervised students.
+seed and three paired students) are `3,117` for the default full plan and `6,021`
+for the primary plus compact ConvNet pair. Three mechanism controls apply to
+Colored MNIST and Waterbirds only. The shortcut family adds at most `213` fits:
+`33` ordinary teachers + `48` repair candidates + `123` KD students + `9` supervised students.
+MultiCelebA contributes `47` baseline-only fits (11 teachers, 33 KD students,
+3 supervised students), with no repair or mechanism controls.
 Conditional Balanced Softmax omissions, infeasible candidates and verified
 control aliases reduce actual fits. Appendix A.6's `2,904/5,808` maxima remain
 correct for the original 13-dataset subset only.
 Selecting all three class-family presets produces `159` settings, `160` endpoint
-panels and at most `8,961` fits. Different resolutions/initializations remain
+panels and at most `8,925` fits. Different resolutions/initializations remain
 separate panels; equal fit counts do not imply equal computational cost.
 
 Report completed / eligible recipes separately from mechanism controls and
@@ -576,11 +657,41 @@ three new adapters accept these local layouts under `--root data`:
 |---|---|
 | `colored_mnist` | `data/colored_mnist/1.0/MNIST/...`; explicitly acquire torchvision MNIST with the command below, then hash the rendered data at training |
 | `waterbirds` | `data/waterbirds/1.0/metadata.csv` and relative image paths; required columns `img_filename,y,place,split`, split IDs `0/1/2`. Manually provision the licensed release |
-| `urbancars` | `data/urbancars/1.0/bg-0.95_co_occur_obj-0.95/train/...` and `bg-0.5_co_occur_obj-0.5/{val,test}/...`; eight `obj-{urban,country}_bg-{urban,country}_co_occur_obj-{urban,country}` folders per split with native 256-pixel JPGs. Masks are not predictor inputs |
+| `multiceleba` | `data/multiceleba/1.0/img_align_celeba/*.jpg` plus `list_attr_celeba.csv` (`image_id,High_Cheekbones,Young,Male`, attributes `-1/+1`) and `list_eval_partition.csv` (`image_id,partition`, splits `0/1/2`). Original CelebA `.txt` annotations/partitions are also accepted. Obtain aligned images and metadata from the CelebA authors; no image generation |
 
-Waterbirds/UrbanCars have no automatic downloader. Unversioned source directories
+Waterbirds/MultiCelebA have no automatic downloader. Unversioned source directories
 and direct released roots are also accepted; provenance records the loaded
 content. Review acquisition licenses and retain release/archive digests externally.
+
+#### Prepared MultiCelebA baseline-only configuration
+
+The standalone [MultiCelebA BF16 config](../configs/teacher_baselines/multiceleba_bf16.json)
+is ready for planning: pretrained ResNet-34/18, 224-pixel views, batch 32, SGD LR
+`0.001`, 100 epochs, four workers, teacher seed 41, student seeds 42/43/44,
+KD temperature 4, weight 0.5 and five warmup epochs. Both repair and mechanism
+controls are disabled. All 11 ordinary teacher recipes are included, yielding
+at most 47 fits. Balanced Softmax eligibility is checked from actual class counts.
+The Colored MNIST MSE-teacher LR exception does not apply here.
+
+From the repository root, this command validates and prints the complete plan
+without dataset/weight downloads, model construction, training, or output writes:
+
+```bash
+python -m kd.teacher_baselines plan \
+  --config configs/teacher_baselines/multiceleba_bf16.json \
+  --output runs/multiceleba-baseline-bf16 --dry-run
+```
+
+Before launch, provision `data/multiceleba/1.0/` using the layout above and run
+`python -m kd.shortcut_data multiceleba --root data` for training/validation data
+preflight (no test images). Input root `data` is relative to the working directory;
+set it explicitly in a new deployment config if the server uses `/workspace/datasets`.
+Native CUDA BF16 support and actual named ImageNet weights are required at launch.
+Run a separate real-data numerical-stability pilot of all recipes before committing
+full budgets; offline fixtures and plan validation do not establish convergence.
+Future authorized execution uses `teacher_baselines train` and then `evaluate`
+with the same config/output. Preparing this configuration does not launch either
+phase or modify an active experiment's source/configuration.
 
 ```bash
 # Explicit optional MNIST acquisition; no teacher/student fitting.
@@ -588,13 +699,13 @@ python -m kd.shortcut_data colored_mnist --root data --download-mnist
 
 # Inspect the complete scope without writes, downloads or fitting.
 python -m kd.teacher_baseline_matrix plan \
-  --root data --output runs/teacher-baselines-v7/matrix-plan \
+  --root data --output runs/teacher-baselines-bf16/matrix-plan \
   --epochs 100 --dry-run
 
 # Materialize a fresh source-bound plan. Choose runtime here, not via later overrides.
 python -m kd.teacher_baseline_matrix plan \
-  --root data --output runs/teacher-baselines-v7/matrix-plan \
-  --epochs 100 --device cuda --precision float32 --workers 4
+  --root data --output runs/teacher-baselines-bf16/matrix-plan \
+  --epochs 100 --device cuda --precision bfloat16 --workers 4
 ```
 
 Add `--pairs resnet34_resnet18_smallstem_imagenet convnet6` when creating the plan for 107 settings;
@@ -605,11 +716,11 @@ Plan, dataset cache and study output roots must be disjoint.
 ### 9.2. Preflight, train, evaluate and report
 
 ```bash
-python -m kd.full_benchmark preflight --plan runs/teacher-baselines-v7/matrix-plan
-python -m kd.full_benchmark train --plan runs/teacher-baselines-v7/matrix-plan
-python -m kd.full_benchmark evaluate --plan runs/teacher-baselines-v7/matrix-plan
-python -m kd.full_benchmark report --plan runs/teacher-baselines-v7/matrix-plan \
-  --output runs/teacher-baselines-v7/overview
+python -m kd.full_benchmark preflight --plan runs/teacher-baselines-bf16/matrix-plan
+python -m kd.full_benchmark train --plan runs/teacher-baselines-bf16/matrix-plan
+python -m kd.full_benchmark evaluate --plan runs/teacher-baselines-bf16/matrix-plan
+python -m kd.full_benchmark report --plan runs/teacher-baselines-bf16/matrix-plan \
+  --output runs/teacher-baselines-bf16/overview
 ```
 
 Preflight checks all local training/validation datasets without fetching weights
@@ -704,7 +815,7 @@ do not retrain/count the shortcut settings once per class profile.
 | Colored MNIST / reversed color (`0.9` mismatch) | WGA | — | — | — | — | — | — | Not run |
 | Colored MNIST / unbiased color (`0.5` mismatch) | WGA | — | — | — | — | — | — | Not run; shared test digits |
 | Waterbirds / released test | WGA | — | — | — | — | — | — | Not run; provision local release |
-| UrbanCars / released/author-defined test | WGA | — | — | — | — | — | — | Not run; provision local release |
+| MultiCelebA / official test | WGA | — | — | — | — | — | — | Not run; baseline/KD only; provision CelebA |
 
 `M=BAcc` for the shown class rows; it becomes raw accuracy for `balanced`.
 The shortcut rows retain `M=WGA`. "Selected" always means validation-selected
@@ -815,11 +926,12 @@ initial tensors or parameter counts.
 
 | Runtime defaults | Saved main matrix | Standardized retained baseline matrix |
 |---|---|---|
-| Training device / precision | Assigned CUDA device / `auto` in available saved GPU protocols | `auto` device / `float32` |
+| Training device / precision | Assigned CUDA device / `auto` in available saved GPU protocols | `auto` device / explicit `bfloat16` for new plans; CUDA required at execution |
 | Data-loader workers | `4` in available saved CUDA protocols | `0` |
 | Overrides | Per-run frozen config is authoritative | Generator exposes epochs, device, precision, workers, and seeds; bound configs require a fresh plan for changes |
 
-CUDA `auto` chooses BF16 where supported, scaled FP16 otherwise. Fast mode
+Historical/explicit CUDA precision `auto` chooses BF16 where supported, scaled FP16
+otherwise. The new baseline default is explicit BF16, without that fallback. Fast mode
 permits TF32 and nondeterministic cuDNN choices; seeds alone do not guarantee
 bitwise GPU reproducibility. Resolved runtime belongs in each run's metadata.
 Evaluation runtimes and timing scopes are specified in Appendix A.5.
@@ -1021,19 +1133,19 @@ No historical checkpoint, protocol, result, or missing runtime field is rewritte
 ### A.7. Retained matrix inspection and execution
 
 Read the saved matrix, or inspect the retained generator without creating outputs.
-These commands do not configure Colored MNIST, Waterbirds, or UrbanCars:
+These commands do not configure Colored MNIST, Waterbirds, or MultiCelebA:
 
 ```bash
 jq '{datasets, profiles, job_count: (.jobs | length)}' \
   runs/experiment1-multidataset/matrix-plan/protocol.json
 
 python -m kd.teacher_baseline_matrix plan \
-  --output runs/teacher-baselines-v7/class-reference-plan --epochs 100 --pairs convnet6 --dry-run \
+  --output runs/teacher-baselines-bf16/class-reference-plan --epochs 100 --pairs convnet6 --dry-run \
   --datasets cifar10 cifar100 svhn cinic10 gtsrb fashionmnist pathmnist \
   bloodmnist dermamnist organamnist caltech101 eurosat stl10
 
 python -m kd.teacher_baseline_matrix plan \
-  --output runs/teacher-baselines-v7/class-reference-plan --epochs 100 \
+  --output runs/teacher-baselines-bf16/class-reference-plan --epochs 100 \
   --pairs convnet6 resnet34_resnet18 --dry-run \
   --datasets cifar10 cifar100 svhn cinic10 gtsrb fashionmnist pathmnist \
   bloodmnist dermamnist organamnist caltech101 eurosat stl10

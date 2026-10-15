@@ -30,7 +30,8 @@ DEFAULT_GROUP_POLICY = {"version": 1, "seed": 2026,
     "bootstrap_repetitions": 20, "stability_threshold": 0.7, "top_fraction": 0.25,
     "screen_limit": 32, "preservation_per_group": 64, "localization_batch_size": 2,
     "mechanism_controls": True}
-DISCORDANT_GROUPS = {"colored_mnist": (1, 2), "waterbirds": (1, 2), "urbancars": (1, 2, 3, 4, 5, 6)}
+DISCORDANT_GROUPS = {"colored_mnist": (1, 2), "waterbirds": (1, 2),
+                     "multiceleba": (0, 2, 3, 4, 5, 7), "urbancars": (1, 2, 3, 4, 5, 6)}
 
 
 def mechanism_conditions(spec):
@@ -38,6 +39,8 @@ def mechanism_conditions(spec):
 
 
 def validate_shortcut_spec(spec):
+    if spec.teacher.data.source == "multiceleba" and (spec.repair is not None or "teacher_repair" in spec.recipes):
+        raise ValueError("MultiCelebA currently supports baseline/KD only; facial-attribute repair is not validated")
     policy = spec.group_policy
     if (not isinstance(policy, dict) or set(policy) != set(DEFAULT_GROUP_POLICY)
             or type(policy.get("version")) is not int or policy["version"] != 1):

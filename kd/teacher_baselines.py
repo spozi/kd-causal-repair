@@ -7,6 +7,7 @@ the separate evaluate phase requires a frozen validation-based selection.
 import argparse
 from dataclasses import dataclass, replace
 import json
+import math
 from pathlib import Path
 import shutil
 import statistics
@@ -24,7 +25,7 @@ from .engine import run_experiment
 from .evaluation import collect_predictions, prediction_metrics, save_prediction_report
 from .models import MODEL_NAMES, create_model
 from .matrix_binding import STUDY_SOURCE_FILES, verify_matrix_binding
-from .runtime import configure_accelerator, prepare_model, resolve_device, resolve_precision
+from .runtime import PRECISIONS, configure_accelerator, prepare_model, resolve_device, resolve_precision
 from .teacher_repair_baseline import (REPAIR_FILES, REPAIR_NAME, TeacherRepairOptions,
                                      repair_options, repair_spec, repair_targets, train_repair_teacher,
                                      verify_repair_details)
@@ -52,6 +53,7 @@ class TeacherBaselineSpec:
     matrix_binding: dict | None = None
     student_weights: str | None = None
     group_policy: dict | None = None
+    teacher_learning_rates: dict | None = None
 
     def validate(self):
         self.teacher.validate()
@@ -82,6 +84,14 @@ class TeacherBaselineSpec:
             RECIPES[name].validate()
             if RECIPES[name].sam_rho and self.teacher.train.precision == "float16":
                 raise ValueError("SAM supports float32/bfloat16; set teacher precision explicitly")
+        if self.teacher_learning_rates is not None:
+            if not isinstance(self.teacher_learning_rates, dict):
+                raise ValueError("teacher_learning_rates must map ordinary teacher recipes to positive finite rates")
+            for name, rate in self.teacher_learning_rates.items():
+                if (name not in self.recipes or name not in RECIPES or isinstance(rate, bool)
+                        or not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate <= 0):
+                    raise ValueError("teacher_learning_rates requires selected ordinary recipes and positive finite rates")
+                replace(self.teacher, train=replace(self.teacher.train, learning_rate=rate)).validate()
         for seeds in (self.teacher_seeds, self.student_seeds):
             if (not seeds or len(set(seeds)) != len(seeds)
                     or any(not isinstance(seed, int) or isinstance(seed, bool) or seed < 0 for seed in seeds)):
@@ -123,6 +133,8 @@ class TeacherBaselineSpec:
             value["student_weights"] = self.student_weights
         if self.group_policy is not None:
             value["group_policy"] = self.group_policy
+        if self.teacher_learning_rates is not None:
+            value["teacher_learning_rates"] = self.teacher_learning_rates
         return _json(value)
 
 
@@ -150,7 +162,8 @@ def study_configs(spec: TeacherBaselineSpec, output):
             name = (f"teacher_repair_seed{teacher_seed}" if recipe == REPAIR_NAME
                     else f"teacher_{recipe}_seed{teacher_seed}")
             teacher = replace(spec.teacher, name=name, output_dir=output,
-                              train=replace(spec.teacher.train, seed=teacher_seed))
+                              train=replace(spec.teacher.train, seed=teacher_seed,
+                                  learning_rate=(spec.teacher_learning_rates or {}).get(recipe, spec.teacher.train.learning_rate)))
             teachers.append((recipe, teacher))
             for student_seed in spec.student_seeds:
                 student = replace(spec.teacher,
@@ -666,6 +679,8 @@ def main(argv=None):
     parser.add_argument("--config", help="Teacher-baseline study JSON")
     parser.add_argument("--output", required=True, help="Fresh study root (compatible runs resume)")
     parser.add_argument("--device", help="Override the base training device")
+    parser.add_argument("--precision", choices=PRECISIONS,
+                        help="Override precision for an unbound study; matrix-bound runs require a fresh plan")
     parser.add_argument("--recipes", nargs="+", choices=(*RECIPES, REPAIR_NAME))
     parser.add_argument("--dry-run", action="store_true", help="Print the complete protocol without writes or dataset access")
     args = parser.parse_args(argv)
@@ -677,6 +692,9 @@ def main(argv=None):
         spec = load_spec(args.config)
     if args.device:
         spec = replace(spec, teacher=replace(spec.teacher, train=replace(spec.teacher.train, device=args.device)))
+    if args.precision:
+        spec = replace(spec, teacher=replace(spec.teacher,
+                       train=replace(spec.teacher.train, precision=args.precision)))
     if args.recipes:
         spec = replace(spec, recipes=tuple(args.recipes),
                        repair=spec.repair if REPAIR_NAME in args.recipes else None)

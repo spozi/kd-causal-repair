@@ -1,0 +1,71 @@
+{
+  "teacher": {
+    "name": "teacher",
+    "output_dir": "runs/multiceleba-baseline-bf16",
+    "data": {
+      "source": "multiceleba",
+      "root": "data",
+      "dataset_version": "1.0",
+      "dataset_profile": "native-shortcut",
+      "num_classes": 2,
+      "image_size": 224,
+      "augmentation": "basic",
+      "horizontal_flip": false,
+      "download": false,
+      "imbalance_factor": 1,
+      "confirmation_fraction": 0,
+      "split_seed": 2026
+    },
+    "student": {
+      "name": "resnet34",
+      "weights": "IMAGENET1K_V1"
+    },
+    "distillation": {"method": "supervised"},
+    "train": {
+      "epochs": 100,
+      "batch_size": 32,
+      "learning_rate": 0.001,
+      "momentum": 0.9,
+      "weight_decay": 0.0005,
+      "workers": 4,
+      "threads": 4,
+      "device": "auto",
+      "precision": "bfloat16",
+      "cuda_mode": "fast",
+      "channels_last": true,
+      "persistent_workers": false,
+      "prefetch_factor": 2,
+      "seed": 41,
+      "selection_metric": "worst_group_accuracy"
+    },
+    "benchmark": {"warmup": 20, "iterations": 100}
+  },
+  "student_model": "resnet18",
+  "student_weights": "IMAGENET1K_V1",
+  "teacher_seeds": [41],
+  "student_seeds": [42, 43, 44],
+  "teacher_selection_metric": "worst_group_accuracy",
+  "student_selection_metric": "worst_group_accuracy",
+  "temperature": 4,
+  "kd_weight": 0.5,
+  "warmup_epochs": 5,
+  "repair": null,
+  "recipes": [
+    "control", "randaugment", "mixup", "cutmix", "label_smoothing",
+    "balanced_softmax", "mse_logits", "mse_probabilities", "sam", "ema",
+    "randaugment_cutmix_ema"
+  ],
+  "group_policy": {
+    "version": 1,
+    "seed": 2026,
+    "overall_accuracy_guardrail": 0.005,
+    "group_accuracy_guardrail": 0.005,
+    "bootstrap_repetitions": 20,
+    "stability_threshold": 0.7,
+    "top_fraction": 0.25,
+    "screen_limit": 32,
+    "preservation_per_group": 64,
+    "localization_batch_size": 2,
+    "mechanism_controls": false
+  }
+}

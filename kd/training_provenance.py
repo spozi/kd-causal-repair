@@ -27,7 +27,7 @@ def training_provenance(value: dict) -> dict:
         raise ValueError("Training data provenance requires train/validation split sizes")
     sizes.pop("test", None)
     sizes.pop("confirmation", None)
-    if result["source"] in {"colored_mnist", "waterbirds", "urbancars"}:
+    if result["source"] in {"colored_mnist", "waterbirds", "multiceleba", "urbancars"}:
         for name in list(sizes):
             if name.startswith("test_"):
                 sizes.pop(name)

@@ -500,6 +500,7 @@ class TeacherRepairIntegrationTests(unittest.TestCase):
     def test_presets_plan_the_original_repair_condition_without_dataset_access(self):
         for filename in ("cifar10_lt100.json", "cifar100_balanced.json"):
             spec = load_spec(Path("configs/teacher_baselines") / filename)
+            self.assertEqual(spec.teacher.train.precision, "bfloat16")
             plan = plan_study(spec, "/private/tmp/teacher-repair-plan-only")
             self.assertIn(REPAIR_NAME, spec.recipes)
             self.assertFalse(plan["repair_protocols"][0]["downstream_kd"])

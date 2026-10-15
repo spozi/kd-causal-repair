@@ -23,7 +23,7 @@
       "workers": 0,
       "threads": 4,
       "device": "auto",
-      "precision": "float32",
+      "precision": "bfloat16",
       "seed": 41
     },
     "benchmark": {"warmup": 20, "iterations": 100}

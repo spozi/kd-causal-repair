@@ -187,7 +187,7 @@ class ExperimentConfig:
         sources = {"synthetic", "imagefolder", "cifar10", "cifar100", "svhn", "cinic10",
                    "gtsrb", "fashionmnist", "pathmnist", "bloodmnist", "dermamnist",
                    "organamnist", "caltech101", "eurosat", "stl10",
-                   "colored_mnist", "waterbirds", "urbancars"}
+                   "colored_mnist", "waterbirds", "multiceleba", "urbancars"}
         if self.data.source not in sources:
             raise ValueError(f"data.source must be one of {sorted(sources)}")
         requirements = {"cifar10": (10, 32), "cifar100": (100, 32),
@@ -220,7 +220,7 @@ class ExperimentConfig:
                     raise ValueError(f"CIFAR-10 requires num_classes=10 and image_size={size}")
                 raise ValueError(f"{self.data.source} requires num_classes={classes}"
                                  + (f" and image_size={size}" if size is not None else ""))
-        shortcut_sizes = {"colored_mnist": 32, "waterbirds": 224, "urbancars": 256}
+        shortcut_sizes = {"colored_mnist": 32, "waterbirds": 224, "multiceleba": 224, "urbancars": 256}
         if self.data.source in shortcut_sizes:
             if (self.data.num_classes != 2 or self.data.image_size != shortcut_sizes[self.data.source]
                     or self.data.dataset_profile not in {"balanced", "native-shortcut"} or self.data.imbalance_factor != 1

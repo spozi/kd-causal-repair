@@ -96,11 +96,11 @@ class PretrainedTransferTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             default = plan_matrix(root / "default", root=root / "data")
-            self.assertEqual((default["job_count"], default["counts"]["total_fits_max"]), (55, 3153))
+            self.assertEqual((default["job_count"], default["counts"]["total_fits_max"]), (55, 3117))
             two = plan_matrix(root / "two", root=root / "data", pairs=("resnet34_resnet18_smallstem_imagenet", "convnet6"))
-            self.assertEqual((two["job_count"], two["counts"]["total_fits_max"]), (107, 6057))
+            self.assertEqual((two["job_count"], two["counts"]["total_fits_max"]), (107, 6021))
             all_pairs = plan_matrix(root / "all", root=root / "data", pairs=tuple(PAIRINGS))
-            self.assertEqual((all_pairs["job_count"], all_pairs["counts"]["total_fits_max"]), (159, 8961))
+            self.assertEqual((all_pairs["job_count"], all_pairs["counts"]["total_fits_max"]), (159, 8925))
             self.assertEqual(list(root.iterdir()), [])
 
     def test_compact_presets_and_native_shortcut_inputs_remain_available(self):
@@ -109,10 +109,10 @@ class PretrainedTransferTests(unittest.TestCase):
             self.assertEqual((spec.teacher.data.image_size, spec.teacher.data.preprocessing), (32, "legacy"))
             self.assertIsNone(spec.teacher.student.weights)
             self.assertIsNone(spec.student_weights)
-        shortcuts = {job["dataset"]: study_spec(job) for job in matrix_jobs(datasets=("colored_mnist", "waterbirds", "urbancars"))}
+        shortcuts = {job["dataset"]: study_spec(job) for job in matrix_jobs(datasets=("colored_mnist", "waterbirds", "multiceleba", "urbancars"))}
         self.assertEqual(shortcuts["colored_mnist"].teacher.data.image_size, 32)
         self.assertIsNone(shortcuts["colored_mnist"].student_weights)
-        for source, size in (("waterbirds", 224), ("urbancars", 256)):
+        for source, size in (("waterbirds", 224), ("multiceleba", 224), ("urbancars", 256)):
             self.assertEqual(shortcuts[source].teacher.data.image_size, size)
             self.assertEqual(shortcuts[source].student_weights, "IMAGENET1K_V1")
 
@@ -224,7 +224,7 @@ class PretrainedTransferTests(unittest.TestCase):
                  "performed": True, "channels": [], "ranking": [{"stage": "stage4", "channel": 0}]}):
             root = Path(temp)
             job = matrix_jobs(datasets=("cifar10",), profiles=("balanced",), root=root / "data",
-                              epochs=1, device="cpu", student_seeds=(42,))[0]
+                              epochs=1, device="cpu", precision="float32", student_seeds=(42,))[0]
             spec = study_spec(job)
             spec = replace(spec, recipes=("control", REPAIR_NAME),
                 repair=TeacherRepairOptions(channel_budgets=(1,), learning_rates=(0.001,),

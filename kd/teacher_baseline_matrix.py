@@ -19,7 +19,7 @@ from .matrix_binding import (BINDING_VERSION, MATRIX_SOURCE_FILES, canonical_dig
                              matrix_payload_digest)
 from .neuron_surgery_baselines import baseline_configs
 from .neuron_surgery_matrix import DATASETS as CLASS_DATASETS, PROFILES, matrix_spec
-from .shortcut_data import SHORTCUT_DATASETS
+from .shortcut_data import SHORTCUT_DATASETS, DEFAULT_SHORTCUT_DATASETS
 from .shortcut_baselines import DEFAULT_GROUP_POLICY
 from .runtime import PRECISIONS, valid_device_spec
 from .teacher_baselines import TeacherBaselineSpec, plan_study
@@ -29,6 +29,7 @@ from .teacher_training import RECIPES
 
 MATRIX_VERSION = 2
 DEFAULT_EPOCHS = 100
+DEFAULT_PRECISION = "bfloat16"
 PAIRINGS = {
     "convnet6": {"teacher": "convnet6_w32", "student": "convnet6_w16"},
     "resnet34_resnet18": {"teacher": "resnet34_smallstem", "student": "resnet18_smallstem"},
@@ -36,6 +37,7 @@ PAIRINGS = {
 }
 DEFAULT_PAIRS = ("resnet34_resnet18_smallstem_imagenet",)
 DATASETS = {**CLASS_DATASETS, **SHORTCUT_DATASETS}
+DEFAULT_DATASETS = (*CLASS_DATASETS, *DEFAULT_SHORTCUT_DATASETS)
 
 
 def _shortcut_job(dataset, *, root, device, precision, workers, epochs, teacher_seeds, student_seeds):
@@ -52,10 +54,13 @@ def _shortcut_job(dataset, *, root, device, precision, workers, epochs, teacher_
             learning_rate=0.05 if small else 0.001, momentum=0.9, weight_decay=0.0005,
             workers=workers, seed=teacher_seeds[0], device=device, precision=precision, threads=4,
             selection_metric="worst_group_accuracy"), benchmark=BenchmarkConfig(warmup=20, iterations=100))
+    face = dataset == "multiceleba"
     spec = TeacherBaselineSpec(teacher=teacher, student_model=student_model, student_weights=weights,
-        teacher_seeds=teacher_seeds, student_seeds=student_seeds, recipes=(*RECIPES, REPAIR_NAME),
+        teacher_seeds=teacher_seeds, student_seeds=student_seeds, recipes=tuple(RECIPES) if face else (*RECIPES, REPAIR_NAME),
         teacher_selection_metric="worst_group_accuracy", student_selection_metric="worst_group_accuracy",
-        repair=TeacherRepairOptions(repair_batch_size=64 if small else 16), group_policy=dict(DEFAULT_GROUP_POLICY))
+        repair=None if face else TeacherRepairOptions(repair_batch_size=64 if small else 16),
+        group_policy={**DEFAULT_GROUP_POLICY, "mechanism_controls": not face},
+        teacher_learning_rates={"mse_logits": 0.005} if dataset == "colored_mnist" else None)
     spec.validate()
     pair = "convnet6" if small else "resnet34_resnet18_imagenet"
     return {"id": f"{dataset}-native-shortcut-{pair}", "dataset": dataset, "version": info["version"],
@@ -92,15 +97,17 @@ def _spec_digest(value):
 
 
 def matrix_jobs(datasets=None, profiles=None, pairs=None, *, root="data", device="auto",
-                precision="float32", workers=0, epochs=DEFAULT_EPOCHS,
+                precision=DEFAULT_PRECISION, workers=0, epochs=DEFAULT_EPOCHS,
                 teacher_seeds=(41,), student_seeds=(42, 43, 44)):
     """Return validated dataset/profile/pair settings, without dataset access.
 
     Dataset sizes, flip policy and split identity come from the historical main
     matrix. New teacher/student runs explicitly override its profile-dependent
     epoch budgets with one common budget; repair retains its separate budget.
+    BF16 is explicit for new GPU runs; CPU/debug plans must request float32.
+    Planning itself does not resolve a device or require a CUDA installation.
     """
-    datasets = _selection(datasets, DATASETS, "datasets")
+    datasets = _selection(DEFAULT_DATASETS if datasets is None else datasets, DATASETS, "datasets")
     profiles = _selection(profiles, PROFILES, "profiles")
     pairs = _selection(DEFAULT_PAIRS if pairs is None else pairs, PAIRINGS, "pairs")
     root = _path(root, "root")
@@ -324,7 +331,8 @@ def main(argv=None):
     parser.add_argument("--profiles", nargs="+", choices=tuple(PROFILES))
     parser.add_argument("--pairs", nargs="+", choices=tuple(PAIRINGS))
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--precision", choices=PRECISIONS, default="float32")
+    parser.add_argument("--precision", choices=PRECISIONS, default=DEFAULT_PRECISION,
+                        help="Mixed precision for all teacher/student arms (default: bfloat16; requires native CUDA BF16). Use float32 for CPU/debug runs.")
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS,
                         help="Common teacher/student epoch budget for every new matrix setting (default: 100)")

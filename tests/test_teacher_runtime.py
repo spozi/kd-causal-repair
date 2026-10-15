@@ -40,13 +40,26 @@ class TeacherRuntimePreflightTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
     def test_supported_precision_reaches_protocol_freeze(self):
-        for requested, resolved in (("float32", "float32"), ("auto", "bfloat16")):
+        for requested, resolved in (("float32", "float32"), ("auto", "bfloat16"),
+                                    ("bfloat16", "bfloat16")):
             with self.subTest(precision=requested), tempfile.TemporaryDirectory() as root:
                 with patch("kd.teacher_baselines.resolve_device", return_value=torch.device("cuda:0")), \
                         patch("kd.teacher_baselines.resolve_precision", return_value=resolved), \
                         patch("kd.teacher_baselines._freeze_protocol", side_effect=RuntimeError("preflight passed")):
                     with self.assertRaisesRegex(RuntimeError, "preflight passed"):
                         run_study(self.spec(requested), Path(root) / "study")
+
+    def test_unsupported_explicit_bfloat16_rejects_before_any_writes(self):
+        for device in (torch.device("cpu"), torch.device("cuda:0")):
+            with self.subTest(device=device), tempfile.TemporaryDirectory() as root:
+                output = Path(root) / "study"
+                with patch("kd.teacher_baselines.resolve_device", return_value=device), \
+                        patch("kd.runtime.cuda_bf16_supported", return_value=False), \
+                        patch("kd.teacher_baselines._freeze_protocol", side_effect=AssertionError("writes")), \
+                        patch("kd.teacher_baselines.build_data", side_effect=AssertionError("data access")):
+                    with self.assertRaisesRegex(ValueError, "bfloat16"):
+                        run_study(self.spec("bfloat16"), output)
+                self.assertFalse(output.exists())
 
     def test_plan_and_dry_run_do_not_resolve_runtime(self):
         with tempfile.TemporaryDirectory() as root, \

@@ -63,7 +63,7 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
                     self.assertEqual(data.split_seed, 2026)
                     self.assertEqual(train.epochs, DEFAULT_EPOCHS)
                     self.assertEqual(train.workers, 0)
-                    self.assertEqual(train.precision, "float32")
+                    self.assertEqual(train.precision, "bfloat16")
                     self.assertEqual(train.device, "auto")
                     self.assertEqual(spec.teacher.student.name, "convnet6_w32")
                     self.assertEqual(spec.student_model, "convnet6_w16")
@@ -170,6 +170,8 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
             materialize_matrix_plan(output, **settings)
             with self.assertRaisesRegex(ValueError, "changed"):
                 materialize_matrix_plan(output, **settings, workers=2)
+            with self.assertRaisesRegex(ValueError, "changed"):
+                materialize_matrix_plan(output, **settings, precision="float32")
             protocol_path = output / "protocol.json"
             original = protocol_path.read_bytes()
             with patch("kd.teacher_baseline_matrix.fingerprint", return_value="changed-source"):
@@ -485,7 +487,8 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
             for phase in ("train", "evaluate"):
                 for overrides in (["--output", str(root / "other-output")],
                                   ["--output", spec.teacher.output_dir, "--recipes", "control"],
-                                  ["--output", spec.teacher.output_dir, "--device", "cpu"]):
+                                  ["--output", spec.teacher.output_dir, "--device", "cpu"],
+                                  ["--output", spec.teacher.output_dir, "--precision", "float32"]):
                     with self.subTest(phase=phase, overrides=overrides), \
                             patch("kd.teacher_baselines.build_data", side_effect=AssertionError("dataset access")), \
                             self.assertRaisesRegex(ValueError, "binding"):

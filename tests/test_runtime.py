@@ -6,6 +6,7 @@ import torch
 from kd.config import DataConfig, ExperimentConfig, TrainConfig
 from kd.data import build_data
 from kd.runtime import (accelerator_workers, cuda_preflight, cuda_requested,
+                        autocast_context,
                         loader_performance_kwargs, make_grad_scaler, resolve_device,
                         resolve_precision, valid_device_spec)
 
@@ -43,6 +44,24 @@ class RuntimePolicyTests(unittest.TestCase):
         self.assertEqual(accelerator_workers("cuda:2", 0), 4)
         self.assertEqual(accelerator_workers("cuda:2", 8), 8)
         self.assertEqual(accelerator_workers("cpu", 0), 0)
+
+    def test_explicit_bfloat16_never_silently_falls_back(self):
+        for device in (torch.device("cpu"), torch.device("mps"), torch.device("cuda:1")):
+            with self.subTest(device=device), patch("kd.runtime.cuda_bf16_supported", return_value=False):
+                with self.assertRaisesRegex(ValueError, "bfloat16"):
+                    resolve_precision("bfloat16", device)
+
+    def test_bfloat16_autocast_and_scaler_use_selected_cuda_device(self):
+        device = torch.device("cuda:1")
+        with patch("kd.runtime.torch.cuda.get_device_capability", return_value=(8, 6)) as capability, \
+                patch("kd.runtime.torch.autocast") as autocast, \
+                patch("kd.runtime.torch.amp.GradScaler") as scaler:
+            self.assertEqual(resolve_precision("bfloat16", device), "bfloat16")
+            autocast_context(device, "bfloat16")
+            make_grad_scaler(device, "bfloat16")
+            capability.assert_called_with(device)
+            autocast.assert_called_once_with(device_type="cuda", dtype=torch.bfloat16)
+            scaler.assert_called_once_with("cuda", enabled=False)
 
     def test_build_data_applies_cuda_loader_policy(self):
         bundle = build_data(

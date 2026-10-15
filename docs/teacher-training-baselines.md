@@ -163,10 +163,21 @@ parameters before SGD, and advances BN running statistics only on the first pass
 EMA averages parameters and copies model buffers; validation always uses the EMA
 model for that arm, not a post-hoc choice between raw and EMA weights.
 
-Both pilot configs use float32 for all arms, including SAM. The runner supports
-BF16 and ordinary scaled FP16 training, but rejects FP16 SAM before any study
-training or writes, including when `auto` resolves to FP16. CUDA-specific
-execution still needs verification on the intended GPU server.
+Both pilot configs and new matrix plans request explicit `bfloat16` for all arms,
+including SAM. CUDA AMP keeps model/optimizer state FP32; BF16 forward operations
+do not use a gradient scaler. Teacher loss/KD reductions and exported prediction
+probabilities retain their FP32 paths. Explicit BF16 requires native CUDA support
+and does not silently fall back. Use `--precision float32` for a fresh CPU/debug
+matrix plan or standalone unbound study; repeat standalone overrides for evaluation.
+The runner also supports ordinary scaled FP16 training, but rejects FP16 SAM before
+any study training or writes, including when `auto` resolves to FP16. CUDA-specific
+execution still needs verification on the intended GPU server. See the
+[precision policy](experiment-settings.md#321-bf16-execution-policy-for-new-baseline-runs).
+
+Create BF16 studies in a fresh output root such as `runs/teacher-baselines-bf16`.
+Never relabel or resume the completed FP32 Waterbirds experiment as BF16. Its
+saved report and prediction archives are unchanged. Frozen matrix bindings reject
+late precision overrides; change precision when generating a new plan.
 
 ## Recent SOTA-oriented follow-ups: researched, not implemented
 
@@ -252,21 +263,23 @@ The exact optimization, views, repair batches and overlap disclosures are in
 
 Optional compact presets `convnet6` and `resnet34_resnet18` retain 32-pixel,
 from-scratch architectures. The default full plan has 55 settings and at most
-3,153 fits; primary plus compact ConvNet has 107 settings and at most 6,057 fits.
-All three class-family presets give 159 settings and at most 8,961 fits. These
+3,117 fits; primary plus compact ConvNet has 107 settings and at most 6,021 fits.
+All three class-family presets give 159 settings and at most 8,925 fits. These
 are upper bounds, not completed training or equal-compute comparisons. Colored
-MNIST stays at 32 pixels from scratch; Waterbirds/UrbanCars stay pretrained at
-224/256 pixels. CINIC-10/STL-10 pretraining overlap is explicitly unaudited.
+MNIST stays at 32 pixels from scratch; Waterbirds/MultiCelebA use pretrained pairs at
+224 pixels. MultiCelebA replaces UrbanCars in new default plans and is baseline/KD-only
+(11 teachers, 33 KD students, 3 supervised students); repair/controls are disabled.
+UrbanCars remains an explicit legacy option. CINIC-10/STL-10 pretraining overlap is explicitly unaudited.
 Other literature pairings remain pending model/repair-map integration.
 
 ```bash
 # Read-only: all datasets/profiles, no writes or dataset/model access.
 python -m kd.teacher_baseline_matrix plan \
-  --output runs/teacher-baselines-v7/matrix-plan --dry-run
+  --output runs/teacher-baselines-bf16/matrix-plan --dry-run
 
 # Primary pretrained pair plus compact reference; still read-only.
 python -m kd.teacher_baseline_matrix plan \
-  --output runs/teacher-baselines-v7/matrix-plan \
+  --output runs/teacher-baselines-bf16/matrix-plan \
   --pairs resnet34_resnet18_smallstem_imagenet convnet6 --dry-run
 ```
 

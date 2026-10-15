@@ -1,4 +1,4 @@
-"""Versioned local adapters for Colored MNIST, Waterbirds and UrbanCars.
+"""Versioned local shortcut adapters, including legacy UrbanCars support.
 
 No network acquisition occurs unless Colored MNIST explicitly opts into MNIST
 download. Composite datasets are user-provisioned in their released layouts.
@@ -25,8 +25,15 @@ from .runtime import loader_performance_kwargs
 SHORTCUT_DATASETS = {
     "colored_mnist": {"classes": 2, "image_size": 32, "version": "1.0", "groups": 4},
     "waterbirds": {"classes": 2, "image_size": 224, "version": "1.0", "groups": 4},
+    "multiceleba": {"classes": 2, "image_size": 224, "version": "1.0", "groups": 8},
     "urbancars": {"classes": 2, "image_size": 256, "version": "1.0", "groups": 8},
 }
+DEFAULT_SHORTCUT_DATASETS = ("colored_mnist", "waterbirds", "multiceleba")
+# Author's two-bias recipe, indexed by (High_Cheekbones, Young, Male).
+# None retains the entire majority cell; all capped cells use filename order.
+MULTICELEBA_CAPS = {(1, 1, 0): None, (1, 1, 1): 2200, (1, 0, 0): 2200,
+                   (1, 0, 1): 110, (0, 1, 0): 40, (0, 1, 1): 800,
+                   (0, 0, 0): 800, (0, 0, 1): 16220}
 CMNIST_RECIPE = {"digit_label": "digit < 5", "label_noise": 0.25,
                  "train_color_mismatch": [0.2, 0.1],
                  "test_color_mismatch": {"reversed": 0.9, "unbiased": 0.5},
@@ -46,6 +53,9 @@ def shortcut_transform(config, *, training=False):
     elif config.source == "waterbirds":
         # Fixed author-style basic geometry; extra augmentation is a teacher recipe.
         operations = [transforms.Resize((256, 256)), transforms.CenterCrop(224)]
+        mean, std = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+    elif config.source == "multiceleba":
+        operations = [transforms.CenterCrop(178), transforms.Resize((224, 224))]
         mean, std = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
     else:
         operations = []
@@ -85,7 +95,9 @@ class ColoredMNIST(Dataset):
 class CompositeImages(Dataset):
     def __init__(self, root, rows, source, transform):
         self.root, self.rows, self.source, self.transform = root, rows, source, transform
-        self.classes = ["landbird", "waterbird"] if source == "waterbirds" else ["urban", "country"]
+        self.classes = {"waterbirds": ["landbird", "waterbird"],
+                        "multiceleba": ["no_high_cheekbones", "high_cheekbones"],
+                        "urbancars": ["urban", "country"]}[source]
         self.num_groups = SHORTCUT_DATASETS[source]["groups"]
         self.targets = np.asarray([row["label"] for row in rows], dtype=np.int64)
         self.nuisance_labels = np.asarray([row["nuisance"] for row in rows], dtype=np.int64)
@@ -103,6 +115,8 @@ class CompositeImages(Dataset):
             image = opened.convert("RGB")
             if self.source == "urbancars" and image.size != (256, 256):
                 raise ValueError("UrbanCars composites must be native 256 x 256; do not silently resize")
+            if self.source == "multiceleba" and image.size != (178, 218):
+                raise ValueError("MultiCelebA requires aligned CelebA images at width 178 x height 218")
             return self.transform(image), int(row["label"])
 
 
@@ -117,6 +131,10 @@ def _root(config):
     elif config.source == "urbancars":
         for root in candidates:
             if (root / "bg-0.95_co_occur_obj-0.95").is_dir():
+                return root.resolve()
+    elif config.source == "multiceleba":
+        for root in candidates:
+            if any((root / name).is_file() for name in ("list_attr_celeba.csv", "list_attr_celeba.txt")):
                 return root.resolve()
     else:
         return versioned if config.dataset_version else base / config.source
@@ -178,6 +196,89 @@ def _urbancars_rows(root, *, include_test):
     return rows, {"generation_policy": {"train_bg_agreement": 0.95, "train_coobject_agreement": 0.95,
                                         "val_test_bg_agreement": 0.5, "val_test_coobject_agreement": 0.5},
                   "constituent_audit": "released composite IDs; generator does not export original source IDs; no paired-foreground claim"}
+
+
+def _multiceleba_rows(root, *, include_test):
+    """Author two-bias subset; official validation/test, never re-stratified.
+
+    Accept the author's CSV layout or original CelebA TXT annotations. Unlike
+    the author code's positional arrays, join by filename and validate splits.
+    Group IDs use this project's MSB-first order: 4*y + 2*Young + Male.
+    """
+    root = Path(root).resolve()
+    attr_path = root / "list_attr_celeba.csv"
+    if attr_path.is_file():
+        with attr_path.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            if not {"image_id", "High_Cheekbones", "Young", "Male"}.issubset(reader.fieldnames or []):
+                raise ValueError("MultiCelebA attributes require image_id, High_Cheekbones, Young, Male")
+            attributes = list(reader)
+    else:
+        attr_path = root / "list_attr_celeba.txt"
+        with attr_path.open() as handle:
+            declared = int(next(handle).strip())
+            names = next(handle).split()
+            if not {"High_Cheekbones", "Young", "Male"}.issubset(names) or len(set(names)) != len(names):
+                raise ValueError("Invalid MultiCelebA attribute header")
+            attributes = []
+            for line in handle:
+                parts = line.split()
+                if len(parts) != len(names) + 1:
+                    raise ValueError("Invalid MultiCelebA attribute row")
+                attributes.append(dict(zip(["image_id", *names], parts)))
+            if len(attributes) != declared:
+                raise ValueError("MultiCelebA attribute count differs from header")
+    split_path = root / "list_eval_partition.csv"
+    if split_path.is_file():
+        with split_path.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            if not {"image_id", "partition"}.issubset(reader.fieldnames or []):
+                raise ValueError("MultiCelebA splits require image_id and partition")
+            partitions = [(row["image_id"], int(row["partition"])) for row in reader]
+    else:
+        split_path = root / "list_eval_partition.txt"
+        with split_path.open() as handle:
+            partitions = []
+            for line in handle:
+                parts = line.split()
+                if len(parts) != 2:
+                    raise ValueError("Invalid MultiCelebA partition row")
+                partitions.append((parts[0], int(parts[1])))
+    split_by_id = dict(partitions)
+    if len(split_by_id) != len(partitions) or any(split not in (0, 1, 2) for _, split in partitions):
+        raise ValueError("Duplicate MultiCelebA identity or invalid partition")
+    image_ids = [row["image_id"] for row in attributes]
+    if len(set(image_ids)) != len(image_ids) or set(image_ids) != set(split_by_id):
+        raise ValueError("MultiCelebA attribute/split identities must match uniquely")
+    rows = {name: [] for name in (("train", "val", "test") if include_test else ("train", "val"))}
+    selected = {cell: 0 for cell in MULTICELEBA_CAPS}
+    for record in sorted(attributes, key=lambda row: row["image_id"]):
+        name = record["image_id"]
+        # Only accept canonical aligned CelebA filenames, not arbitrary paths.
+        if len(name) != 10 or not name[:6].isdigit() or not name.endswith(".jpg"):
+            raise ValueError("MultiCelebA requires canonical six-digit JPG filenames")
+        values = tuple(int(record[key]) for key in ("High_Cheekbones", "Young", "Male"))
+        if any(value not in (-1, 1) for value in values):
+            raise ValueError("MultiCelebA attributes must be -1/+1")
+        label, young, male = cell = tuple(int(value == 1) for value in values)
+        split = ("train", "val", "test")[split_by_id[name]]
+        if split == "train":
+            cap = MULTICELEBA_CAPS[cell]
+            if cap is not None and selected[cell] >= cap:
+                continue
+            selected[cell] += 1
+        if split not in rows:
+            continue
+        path = _safe_path(root, f"img_align_celeba/{name}")
+        rows[split].append({"path": path, "label": label, "nuisance": [young, male],
+                            "foreground_id": name})
+    return rows, {"metadata_sha256": {"attributes": fingerprint(attr_path), "partitions": fingerprint(split_path)},
+        "construction": {"target": "High_Cheekbones", "nuisance_order": ["Young", "Male"],
+            "train_selection": "author two-bias caps in ascending filename order within official train",
+            "train_caps": [{"cell": list(cell), "cap": cap} for cell, cap in MULTICELEBA_CAPS.items()],
+            "validation_test": "official CelebA partitions, unresampled",
+            "group_id": "4*High_Cheekbones + 2*Young + Male"},
+        "constituent_audit": "unique image IDs across partitions; celebrity identities may span splits; no person-disjoint claim"}
 
 
 def _image_identity(root, rows):
@@ -247,9 +348,13 @@ def build_shortcut_data(config, train, *, include_test=True, diagnostic=False):
                 np.asarray(base_test.data, dtype=np.uint8).tobytes() + digits_test.astype("<i8").tobytes()).hexdigest()}
     else:
         if config.download:
-            raise ValueError("Waterbirds/UrbanCars require explicit local provisioning; automatic download is not supported")
-        rows, release = (_waterbirds_rows(root) if config.source == "waterbirds" else
-                         _urbancars_rows(root, include_test=include_test))
+            raise ValueError("Local shortcut releases require explicit provisioning; automatic download is not supported")
+        if config.source == "waterbirds":
+            rows, release = _waterbirds_rows(root)
+        elif config.source == "multiceleba":
+            rows, release = _multiceleba_rows(root, include_test=include_test)
+        else:
+            rows, release = _urbancars_rows(root, include_test=include_test)
         _audit_foregrounds(rows)
         identity.update(release)
         for split, records in rows.items():
