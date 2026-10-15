@@ -32,8 +32,9 @@ DEFAULT_EPOCHS = 100
 PAIRINGS = {
     "convnet6": {"teacher": "convnet6_w32", "student": "convnet6_w16"},
     "resnet34_resnet18": {"teacher": "resnet34_smallstem", "student": "resnet18_smallstem"},
+    "resnet34_resnet18_smallstem_imagenet": {"teacher": "resnet34_smallstem", "student": "resnet18_smallstem"},
 }
-DEFAULT_PAIRS = ("convnet6",)
+DEFAULT_PAIRS = ("resnet34_resnet18_smallstem_imagenet",)
 DATASETS = {**CLASS_DATASETS, **SHORTCUT_DATASETS}
 
 
@@ -129,15 +130,21 @@ def matrix_jobs(datasets=None, profiles=None, pairs=None, *, root="data", device
         for profile in profiles:
             for pair in pairs:
                 models = PAIRINGS[pair]
+                transfer = pair == "resnet34_resnet18_smallstem_imagenet"
+                weights = "IMAGENET1K_V1" if transfer else None
                 original = replace(matrix_spec(dataset, profile),
                                    teacher_model=models["teacher"], student_model=models["student"],
-                                   teacher_seed=teacher_seeds[0], student_seeds=student_seeds)
+                                   teacher_seed=teacher_seeds[0], student_seeds=student_seeds,
+                                   dataset_image_size=32,
+                                   dataset_preprocessing="imagenet-smallstem-v1" if transfer else "legacy")
                 # output_dir is a placeholder; plan_study/run_study bind the
                 # actual study output for every teacher/student run.
-                teacher, _ = baseline_configs("runs/teacher-baselines-v3", root, device, original)
+                teacher, _ = baseline_configs("runs/teacher-baselines-v7", root, device, original)
                 teacher = replace(teacher, name="teacher",
+                                  student=ModelConfig(models["teacher"], weights=weights),
                                   train=replace(teacher.train, workers=workers, precision=precision,
-                                                epochs=epochs))
+                                                epochs=epochs, batch_size=128,
+                                                learning_rate=0.001 if transfer else 0.05))
                 recipes = tuple(RECIPES)
                 # These two balanced training splits have exactly equal counts,
                 # so Balanced Softmax would duplicate the CE control. Other
@@ -145,11 +152,12 @@ def matrix_jobs(datasets=None, profiles=None, pairs=None, *, root="data", device
                 if dataset in {"cifar10", "cifar100"} and profile == "balanced":
                     recipes = tuple(recipe for recipe in recipes if recipe != "balanced_softmax")
                 spec = TeacherBaselineSpec(
-                    teacher=teacher, student_model=models["student"], teacher_seeds=teacher_seeds,
+                    teacher=teacher, student_model=models["student"], student_weights=weights, teacher_seeds=teacher_seeds,
                     student_seeds=student_seeds, recipes=(*recipes, REPAIR_NAME),
                     teacher_selection_metric="accuracy",
                     student_selection_metric="accuracy" if profile == "balanced" else "balanced_accuracy",
-                    repair=TeacherRepairOptions(allow_sparse_class_fallback=True))
+                    repair=TeacherRepairOptions(allow_sparse_class_fallback=True,
+                                                repair_batch_size=64))
                 spec.validate()
                 jobs.append({"id": f"{dataset}-{profile}-{pair}", "dataset": dataset,
                              "version": DATASETS[dataset]["version"], "profile": profile,

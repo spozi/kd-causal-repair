@@ -8,9 +8,14 @@ A classification implementation of [the project guidelines](knowledge-distillati
 [shortcut companion](docs/causal-benchmark-phase1.md) defines subgroup outcomes,
 teacher-to-student transfer, and research/adaptation boundaries. The planner now
 includes all 16, with native group-aware repair/selection and mechanism controls
-on the three additions. Waterbirds/UrbanCars use ImageNet-pretrained ResNet-34
-teachers and ResNet-18 students (`IMAGENET1K_V1`); provision their local releases
-before training. Full-budget results are not measured. Historical settings and
+on the three additions. The original 13 datasets now default to ImageNet-pretrained
+adapted small-stem ResNet-34 teachers and ResNet-18 students (`IMAGENET1K_V1`)
+at the original 32-pixel input size. Their 7×7 pretrained stem filters are resized
+to 3×3 with per-filter L2-norm preservation; stride is 1 and max-pooling is removed.
+Remaining pretrained backbone tensors are retained; classifier heads are new.
+Colored MNIST retains its 32-pixel from-scratch ConvNet pair; Waterbirds/UrbanCars retain
+their pretrained pair at 224/256 pixels. Provision local releases before training.
+From-scratch 32-pixel presets remain optional. Full-budget results are not measured. Historical settings and
 saved results remain unchanged.
 
 [Teacher-training baselines and distillability](docs/teacher-training-baselines.md)
@@ -22,8 +27,8 @@ freezes validation selection before test access, and documents recent 2025–202
 follow-up methods. Inspect all 16 datasets (four profiles on the original 13,
 one native setting on each addition) without writes or
 training using `python -m kd.teacher_baseline_matrix plan --output
-runs/teacher-baselines-v5/matrix-plan --epochs 100 --dry-run`. Add
-`--pairs convnet6 resnet34_resnet18` to include both supported pairings.
+runs/teacher-baselines-v7/matrix-plan --epochs 100 --dry-run`. Add
+`--pairs resnet34_resnet18_smallstem_imagenet convnet6` for the primary plus compact reference.
 New matrix runs use 100 teacher/student epochs uniformly and 20 repair epochs;
 historical budgets stay frozen. Generated configs bind their parent plan and
 computational sources before execution. Interrupted training requires new
@@ -34,14 +39,17 @@ An interrupted best/last pair commit fails closed: restore a known matching pair
 or use a fresh run. Repair adoption always checks the student's recorded
 training-teacher digest, even when the original checkpoint path still exists.
 
-The default full plan has 55 settings and 56 test endpoint panels; both
-class-family pairs give 107/108. Create a fresh plan after code changes, then use
+The default full plan has 55 settings and 56 test endpoint panels; the primary
+plus compact ConvNet pair gives 107/108. All three presets give 159/160. Create a
+fresh plan after code changes, then use
 `python -m kd.full_benchmark preflight --plan PLAN`; the subsequent phases are
 `train`, `evaluate` and `report` (`report` also needs `--output`). See
 [data layouts and runnable commands](docs/experiment-settings.md#9-execution-readiness-and-pre-run-checks).
 Preflight never downloads weights; explicit training does. Offline tests cover
 native-resolution training/KD with local fixture weights, not GPU capacity or
 actual pretrained-weight performance.
+ImageNet-derived CINIC-10/STL-10 carry an explicit unaudited pretraining-overlap
+warning; they are not claimed as pretraining-disjoint endpoints.
 
 **CIFAR-10 is supported**, with a full-data, repeated-seed study and a held-out test phase. See [the CIFAR-10 protocol](docs/cifar10.md). Generated results live in `runs/cifar10/report.json`; render `report.md` and figures with `python -m kd.reporting --study runs/cifar10` after the study completes.
 
@@ -161,7 +169,12 @@ python -m kd train --config configs/teacher.toml
 python -m kd train --config configs/student.toml
 ```
 
-The example trains ResNet-34 as a teacher and ResNet-18 as a student. Model factories use `weights=None` and make no network requests. Assess the trained teacher's validation accuracy, confidence, NLL, entropy, and calibration before relying on it. A completed training epoch verifies checkpoint provenance, not teacher quality. KD fails if no teacher checkpoint is supplied.
+This older example trains ResNet-34 and ResNet-18 from scratch (`weights=None`),
+without weight downloads. The new baseline planner explicitly requests named
+ImageNet weights instead; those may download when training starts. Assess the
+teacher's validation accuracy and calibration before relying on it. A completed
+training epoch verifies checkpoint provenance, not teacher quality. KD fails if
+no teacher checkpoint is supplied.
 
 Dataset-neutral model IDs include `convnet6_w32`/`convnet6_w16` and
 `resnet18_smallstem`, `resnet34_smallstem`, `resnet50_smallstem`. Standard-stem

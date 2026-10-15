@@ -185,7 +185,7 @@ def add_randaugment(data, config, recipe):
         dataset = dataset.dataset
     operations = list(dataset.transform.transforms)
     position = next(i for i, transform in enumerate(operations) if isinstance(transform, transforms.ToTensor))
-    mean, _ = normalization(config.data.source)
+    mean, _ = normalization(config.data.source, config.data.preprocessing)
     policy = randaugment_policy(config.data.source)
     arguments = {"num_ops": recipe.randaugment_ops, "magnitude": recipe.randaugment_magnitude,
                  "fill": tuple(round(255 * value) for value in mean)}
@@ -307,7 +307,8 @@ def train_teacher(config: ExperimentConfig, recipe: TeacherRecipe, *, selection_
             return json.loads((directory / "summary.json").read_text())
     data = build_data(config.data, config.train, include_test=False)
     training_data_identity = bind_training_data(data.provenance)
-    checkpoint_metadata = metadata(config.student.name, data.classes, config.data.image_size, config.data.source)
+    checkpoint_metadata = metadata(config.student.name, data.classes, config.data.image_size, config.data.source,
+                                   preprocessing=config.data.preprocessing)
     last = directory / "last.pt"
     if last.is_symlink():
         raise ValueError("Teacher resume requires a non-symlink committed last.pt selection anchor")

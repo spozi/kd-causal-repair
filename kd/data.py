@@ -34,7 +34,11 @@ def _ensure_rgb(image: Image.Image) -> Image.Image:
     return image.convert("RGB")
 
 
-def normalization(source: str):
+def normalization(source: str, preprocessing: str = "legacy"):
+    if preprocessing in {"imagenet-transfer-v1", "imagenet-smallstem-v1"}:
+        return MEAN, STD
+    if preprocessing != "legacy":
+        raise ValueError("Unknown input preprocessing protocol")
     # Fixed [-1, 1] scaling for CIFAR: no validation/test statistics are fitted.
     fixed = {
         "colored_mnist": ((0.5,) * 3, (0.5,) * 3),
@@ -54,7 +58,20 @@ def normalization(source: str):
 
 def image_transform(config: DataConfig, *, training: bool):
     size = config.image_size
-    mean, std = normalization(config.source)
+    mean, std = normalization(config.source, config.preprocessing)
+    if config.preprocessing == "imagenet-transfer-v1":
+        if config.source not in CATALOG_SOURCES or size != 224 or config.augmentation != "basic":
+            raise ValueError("ImageNet transfer views require a catalog source, 224 pixels and basic augmentation")
+        operations = [transforms.Lambda(_ensure_rgb), transforms.Resize(256),
+                      transforms.RandomCrop(224) if training else transforms.CenterCrop(224)]
+        if training and config.horizontal_flip:
+            operations.append(transforms.RandomHorizontalFlip())
+        return transforms.Compose([*operations, transforms.ToTensor(), transforms.Normalize(mean, std)])
+    prefix = []
+    if config.preprocessing == "imagenet-smallstem-v1":
+        if config.source not in CATALOG_SOURCES or size != 32 or config.augmentation != "basic":
+            raise ValueError("Small-stem ImageNet views require a catalog source, 32 pixels and basic augmentation")
+        prefix = [transforms.Lambda(_ensure_rgb)]
     if config.source in {"cifar10", "cifar100", "svhn", "cinic10", "fashionmnist",
                          *MEDMNIST_SOURCES}:
         operations = [] if config.source in {"cifar10", "cifar100", "svhn", "cinic10"} else [
@@ -65,7 +82,7 @@ def image_transform(config: DataConfig, *, training: bool):
             operations.append(transforms.RandomHorizontalFlip())
         if training and config.augmentation == "strong":
             operations.append(transforms.ColorJitter(0.2, 0.2, 0.2, 0.02))
-        return transforms.Compose([*operations, transforms.ToTensor(), transforms.Normalize(mean, std)])
+        return transforms.Compose([*prefix, *operations, transforms.ToTensor(), transforms.Normalize(mean, std)])
     if training:
         scale = (0.6, 1.0) if config.augmentation == "strong" else (0.85, 1.0)
         operations = [transforms.RandomResizedCrop(size, scale=scale, ratio=(0.9, 1.1))]
@@ -77,7 +94,7 @@ def image_transform(config: DataConfig, *, training: bool):
                                transforms.RandomApply([transforms.GaussianBlur(3)], p=0.2)])
     else:
         operations = [transforms.Resize(size + max(2, size // 8)), transforms.CenterCrop(size)]
-    return transforms.Compose([*operations, transforms.Lambda(_ensure_rgb),
+    return transforms.Compose([*prefix, *operations, transforms.Lambda(_ensure_rgb),
                                transforms.ToTensor(), transforms.Normalize(mean, std)])
 
 
@@ -300,6 +317,34 @@ def _native_dataset(source: str, root: Path, split: str, transform, download: bo
     raise ValueError(f"No native dataset adapter for {source}")
 
 
+def pretraining_overlap(source: str) -> dict:
+    """Disclosure, not proof of clean or contaminated ImageNet-1K endpoints."""
+    references = {"cinic10": "https://github.com/BayesWatch/cinic-10",
+                  "stl10": "https://cs.stanford.edu/~acoates/stl10/"}
+    return {"pretraining_dataset": "ImageNet-1K", "audit_status": "not_audited",
+            "imagenet_derived_dataset": source in references,
+            "interpretation": ("ImageNet-derived target data: possible pretraining/evaluation overlap; do not claim a pretraining-disjoint test"
+                               if source in references else "Exact duplicate/source-overlap audit has not been performed"),
+            "source_reference": references.get(source)}
+
+
+def transfer_input_policy(data: DataConfig) -> dict:
+    if data.preprocessing == "imagenet-smallstem-v1":
+        fixed = data.source in {"cifar10", "cifar100", "svhn", "cinic10", "fashionmnist", *MEDMNIST_SOURCES}
+        resized = data.source in {"fashionmnist", *MEDMNIST_SOURCES}
+        return {"name": data.preprocessing, "image_size": 32, "rgb_conversion": "before geometry",
+                "train_crop": "random_32_padding_4" if fixed else "random_resized_32_scale_0.85_1_ratio_0.9_1.1",
+                "evaluation_crop": "none" if fixed else "short_edge_36_center_32",
+                "initial_resize": [32, 32] if resized else None,
+                "horizontal_flip": data.horizontal_flip, "mean": list(MEAN), "std": list(STD)}
+    return {"name": "imagenet-transfer-v1", "image_size": 224,
+            "resize_short_edge": 256, "interpolation": "bilinear",
+            "rgb_conversion": "before geometry and teacher augmentation",
+            "train_crop": "random_224", "evaluation_crop": "center_224",
+            "horizontal_flip": data.horizontal_flip,
+            "mean": list(MEAN), "std": list(STD)}
+
+
 def _catalog_provenance(data: DataConfig) -> dict:
     if data.dataset_version is None:
         return {}
@@ -352,6 +397,9 @@ def build_data(data: DataConfig, train: TrainConfig, *, include_test: bool = Tru
         return build_shortcut_data(data, train, include_test=include_test, diagnostic=diagnostic)
     splits = {}
     provenance = {"source": data.source, **_catalog_provenance(data)}
+    if data.preprocessing in {"imagenet-transfer-v1", "imagenet-smallstem-v1"}:
+        provenance.update(input_protocol=transfer_input_policy(data),
+                          pretraining_overlap=pretraining_overlap(data.source))
     if data.source == "synthetic":
         classes = [f"class_{i}" for i in range(data.num_classes)]
         for i, (split, count) in enumerate((("train", data.train_samples), ("val", data.val_samples),

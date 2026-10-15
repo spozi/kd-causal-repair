@@ -34,6 +34,8 @@ class DataConfig:
     dataset_profile: str = "balanced"
     # Only used by the shortcut adapters; omitted from legacy serialization.
     test_environment: str | None = None
+    # Separate input protocol; archive/catalog and split identities stay fixed.
+    preprocessing: str = "legacy"
 
 
 @dataclass(frozen=True)
@@ -194,11 +196,28 @@ class ExperimentConfig:
                         "bloodmnist": (8, 32), "dermamnist": (7, 32),
                         "organamnist": (11, 32), "caltech101": (101, 32),
                         "eurosat": (10, 32), "stl10": (10, 32)}
+        if self.data.preprocessing not in {"legacy", "imagenet-transfer-v1", "imagenet-smallstem-v1"}:
+            raise ValueError("Unknown data.preprocessing protocol")
+        transfer = self.data.preprocessing == "imagenet-transfer-v1"
+        small_transfer = self.data.preprocessing == "imagenet-smallstem-v1"
+        small_models = {"resnet18_smallstem", "resnet34_smallstem", "resnet50_smallstem",
+                        "cifar_resnet18", "cifar_resnet34", "cifar_resnet50"}
+        if transfer:
+            if self.data.source not in requirements or self.data.image_size != 224 or self.data.augmentation != "basic":
+                raise ValueError("ImageNet transfer requires a catalog classification source, image_size=224 and basic views")
+            if self.student.name not in {"resnet18", "resnet34", "resnet50"}:
+                raise ValueError("ImageNet transfer requires an ordinary-stem ResNet")
+        if small_transfer:
+            if self.data.source not in requirements or self.data.image_size != 32 or self.data.augmentation != "basic":
+                raise ValueError("Small-stem ImageNet transfer requires a catalog source, image_size=32 and basic views")
+            if self.student.name not in small_models:
+                raise ValueError("Small-stem ImageNet inputs require an adapted small-stem ResNet")
         if self.data.source in requirements:
             classes, size = requirements[self.data.source]
+            size = 224 if transfer else size
             if self.data.num_classes != classes or (size is not None and self.data.image_size != size):
                 if self.data.source == "cifar10":
-                    raise ValueError("CIFAR-10 requires num_classes=10 and image_size=32")
+                    raise ValueError(f"CIFAR-10 requires num_classes=10 and image_size={size}")
                 raise ValueError(f"{self.data.source} requires num_classes={classes}"
                                  + (f" and image_size={size}" if size is not None else ""))
         shortcut_sizes = {"colored_mnist": 32, "waterbirds": 224, "urbancars": 256}
@@ -220,8 +239,10 @@ class ExperimentConfig:
             raise ValueError("Worst-group selection requires a shortcut dataset")
         for model in (self.student, self.teacher):
             if model.weights is not None:
-                if model.weights != "IMAGENET1K_V1" or model.name not in {"resnet18", "resnet34", "resnet50"}:
-                    raise ValueError("Named pretrained weights require an ordinary-stem ResNet and IMAGENET1K_V1")
+                if model.weights != "IMAGENET1K_V1" or model.name not in ({"resnet18", "resnet34", "resnet50"} | small_models):
+                    raise ValueError("Named pretrained weights require a ResNet adapter and IMAGENET1K_V1")
+                if model.name in small_models and not small_transfer:
+                    raise ValueError("Pretrained small-stem models require the explicit imagenet-smallstem-v1 input protocol")
                 if model.checkpoint:
                     raise ValueError("Use checkpoint or pretrained weights for initialization, not both")
         profiles = {"balanced": 1.0, "lt-if10": 10.0, "lt-if50": 50.0, "lt-if100": 100.0, "native-shortcut": 1.0}
@@ -335,6 +356,8 @@ class ExperimentConfig:
             value["data"].pop("dataset_profile")
         if self.data.test_environment is None:
             value["data"].pop("test_environment")
+        if self.data.preprocessing == "legacy":
+            value["data"].pop("preprocessing")
         for role in ("student", "teacher"):
             if getattr(self, role).weights is None:
                 value[role].pop("weights")

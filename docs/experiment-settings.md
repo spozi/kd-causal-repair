@@ -1,6 +1,6 @@
 # Experiment settings: teacher training, repair, and knowledge distillation
 
-Full-scope update: 15 October 2026.
+Full-scope and pretrained-default update: 15 October 2026 (`kd-baseline`).
 
 The implemented **full experiment includes 16 datasets**: the original 13 datasets
 plus Colored MNIST, Waterbirds, and UrbanCars. All belong to one teacher-quality,
@@ -10,12 +10,12 @@ the original datasets or a separate deferred experiment.
 
 | Evaluation family | Dataset count | Conditions / primary student score | Execution status |
 |---|---:|---|---|
-| Class / long-tail | 13 | Four class profiles; accuracy for `balanced`, class-balanced accuracy for long-tail | Existing catalog, planner, recipes, and class-based repair available |
+| Class / long-tail | 13 | Four class profiles; pretrained ResNet-34 -> ResNet-18 at 32 pixels; accuracy for `balanced`, class-balanced accuracy for long-tail | Primary transfer protocol implemented; compact presets retained separately |
 | Shortcut / nuisance groups | 3 | Native shortcut construction, no IF profiles; worst-group accuracy | Adapters, group selection, repair and mechanism controls implemented; provision real data before running |
 | Full experiment | 16 | Both families, with their declared resolutions and metrics | Planner, preflight, execution/resume and overview reporting implemented; full-budget results not measured |
 
-Sections 1-10 describe the combined experiment. Appendix A contains detailed
-implemented settings for its 13-dataset class family and historical evidence.
+Sections 1-10 describe the combined experiment. Appendix A contains the optional
+32-pixel from-scratch references and historical evidence, not the pretrained default.
 The [shortcut companion](causal-benchmark-phase1.md) supplies construction,
 research sources, and group-aware adaptation details for the other three.
 
@@ -40,6 +40,10 @@ not measured performance.
 This is the canonical roster for the full experiment. `Class profiles` means
 `balanced`, `lt-if10`, `lt-if50`, and `lt-if100`; `native shortcut` means
 the dataset-specific construction without extra class-imbalance profiles.
+Inputs below are the project input sizes, not necessarily upstream/native sizes.
+The original 13 retain `32 x 32` inputs and unchanged archive/catalog and split
+identities. Their new `imagenet-smallstem-v1` protocol combines the compact crop
+geometry with RGB conversion and ImageNet normalization, without 224-pixel upsampling.
 Source IDs/releases in the original 13 rows are immutable catalog entries. The
 three additions use separate version-`1.0` adapters; this version names the
 project adapter contract, not a new upstream release. Their loaded content,
@@ -50,7 +54,7 @@ metadata, renderer and split identities are hashed in run provenance.
 | CIFAR-10 | `cifar10` / `1.0` | 10 | RGB `3 x 32 x 32` | Class profiles | A | Available |
 | CIFAR-100 | `cifar100` / `1.0` | 100 | RGB `3 x 32 x 32` | Class profiles | A | Available |
 | SVHN | `svhn` / `1.0` | 10 | RGB `3 x 32 x 32` | Class profiles | A | Available |
-| CINIC-10 | `cinic10` / `1.0` | 10 | RGB `3 x 32 x 32` | Class profiles | B | Available |
+| CINIC-10 | `cinic10` / `1.0` | 10 | RGB `3 x 32 x 32` | Class profiles | B | Available; pretraining-overlap warning |
 | GTSRB | `gtsrb` / `1.0` | 43 | RGB `3 x 32 x 32` | Class profiles | A | Available |
 | Fashion-MNIST | `fashionmnist` / `1.0` | 10 | RGB `3 x 32 x 32` | Class profiles | A | Available |
 | PathMNIST | `pathmnist` / `2.0` | 9 | RGB `3 x 32 x 32` | Class profiles | B | Available |
@@ -59,7 +63,7 @@ metadata, renderer and split identities are hashed in run provenance.
 | OrganAMNIST | `organamnist` / `2.0` | 11 | RGB `3 x 32 x 32` | Class profiles | B | Available |
 | Caltech-101 | `caltech101` / `1.0` | 101 | RGB `3 x 32 x 32` | Class profiles | C | Available |
 | EuroSAT | `eurosat` / `1.0` | 10 | RGB `3 x 32 x 32` | Class profiles | D | Available |
-| STL-10 | `stl10` / `1.0` | 10 | RGB `3 x 32 x 32` | Class profiles | A, labeled training only | Available |
+| STL-10 | `stl10` / `1.0` | 10 | RGB `3 x 32 x 32` | Class profiles | A, labeled training only | Available; pretraining-overlap warning |
 | Colored MNIST | `colored_mnist` / adapter `1.0`, torchvision MNIST + pinned renderer | 2 | RGB `3 x 32 x 32` adaptation | Native shortcut | E | Available |
 | Waterbirds | `waterbirds` / adapter `1.0`, local released CSV/images | 2 | RGB `3 x 224 x 224` | Native shortcut | F | Available |
 | UrbanCars | `urbancars` / adapter `1.0`, local author-layout composites | 2 | RGB `3 x 256 x 256` | Native shortcut | G | Available |
@@ -98,6 +102,15 @@ source-disjointness or counterfactual audit. In every family,
 test images cannot enter fitting, localization, companion matching, or selection.
 Record actual counts, class/group ordering, archive identities, and split hashes.
 
+Pretraining is an additional data exposure. CINIC-10 includes ImageNet samples
+and STL-10 was collected from ImageNet; neither endpoint is claimed to be
+disjoint from ImageNet-1K pretraining without an exact source/duplicate audit.
+The planner, preflight, data provenance and reports carry `audit_status=not_audited`
+and an ImageNet-derived warning for these two datasets; exact overlap has not
+been established. Other datasets are also not marked as audited-clean.
+Sources: [CINIC-10 authors](https://github.com/BayesWatch/cinic-10),
+[STL-10 authors](https://cs.stanford.edu/~acoates/stl10/).
+
 ### 1.3. Shortcut groups and evaluation environments
 
 | Dataset | Required groups | Training / validation construction | Final test endpoints |
@@ -119,7 +132,8 @@ datasets or independent replications. Construction/provenance details are in
 
 | Family | Condition policy | Preprocessing / base views |
 |---|---|---|
-| Original 13 datasets | Four class profiles; `balanced` means no extra resampling, not guaranteed equal natural class counts | Implemented RGB `32 x 32` crops/normalization in Appendix A.2; flips `p=0.5` for CIFAR-10/CIFAR-100/CINIC-10 only |
+| Original 13 datasets, primary pretrained pair | Four class profiles; `balanced` means no extra resampling, not guaranteed equal natural class counts | `imagenet-smallstem-v1`: RGB conversion before geometry; Appendix A.2's 32-pixel crop/resize/flip policy; ImageNet normalization replaces source-specific normalization |
+| Optional compact pairs | Same split/profile membership, different input/model/initialization protocol | Appendix A.2's RGB `32 x 32` views and source-specific normalization; do not pool with the pretrained setting |
 | Three shortcut datasets | `native-shortcut`: native label/nuisance construction; no IF10/50/100 profiles | Dataset-specific policies below |
 
 Appendix A.2 records the class family's exact resampling formula and target-class
@@ -153,8 +167,9 @@ a teacher's Mixup, CutMix, RandAugment, or EMA intervention.
 
 | Scope | Teacher -> student | Architecture convention / support |
 |---|---|---|
-| Original 13 datasets, default | ConvNet-6-W32 -> ConvNet-6-W16 | `convnet6_w32` / `convnet6_w16`; implemented `convnet6` matrix preset |
-| Original 13 datasets, optional additional pair | ResNet-34 -> ResNet-18 | `resnet34_smallstem` / `resnet18_smallstem`; implemented `resnet34_resnet18` preset |
+| Original 13 datasets, default | Adapted ResNet-34 -> ResNet-18 | `resnet34_smallstem` / `resnet18_smallstem`, both derived from `IMAGENET1K_V1`; `resnet34_resnet18_smallstem_imagenet` preset at 32 pixels |
+| Original 13 datasets, optional compact reference | ConvNet-6-W32 -> ConvNet-6-W16 | `convnet6_w32` / `convnet6_w16`; `convnet6` preset, 32 pixels, from scratch |
+| Original 13 datasets, optional compact ResNet reference | ResNet-34 -> ResNet-18 | `resnet34_smallstem` / `resnet18_smallstem`; `resnet34_resnet18` preset, 32 pixels, from scratch |
 | Colored MNIST | ConvNet-6-W32 -> ConvNet-6-W16 | `convnet6_w32` / `convnet6_w16`, from scratch |
 | Waterbirds and UrbanCars | ResNet-34 -> ResNet-18 | `resnet34` / `resnet18`, ordinary stems, both initialized with named ImageNet weights |
 
@@ -163,6 +178,18 @@ declared class count/order. The table specifies comparison choices, not model
 restrictions. Legacy aliases and exact ConvNet structure are in Appendix A.3.
 An optional extra pair does not automatically cross every architecture into the
 three shortcut datasets; declare any expansion before creating the final plan.
+
+The adapted pretrained stem is a project-specific initialization, not an official
+32-pixel ImageNet weight release. Load the named full ImageNet checkpoint, resize
+its `7 x 7` conv1 filters to `3 x 3` by bilinear interpolation (`align_corners=false`),
+then restore each output filter's original L2 norm. Use stride `1`, padding `1`,
+and identity max-pooling; retain all other pretrained backbone/BatchNorm tensors
+and replace the classifier with a new seeded class-count-specific head. The
+method is frozen as `bilinear_l2_7to3_v1`; source and adapted-stem tensor digests
+are recorded. A nonzero filter that maps to zero is rejected rather than silently
+randomized. This is an empirical adaptation, not a guarantee of preserved
+ImageNet accuracy or improved target performance. At 32 pixels the four stage
+maps are `32/16/8/4`, rather than the ordinary stem's `8/4/2/1`.
 
 ### 3.2. Shared budgets and family-specific optimization
 
@@ -176,7 +203,8 @@ three shortcut datasets; declare any expansion before creating the final plan.
 
 | Family | Initialization / optimization | Readiness |
 |---|---|---|
-| Original 13 datasets | From scratch; SGD LR `0.05`, momentum `0.9`, decay `0.0005`, batch `128`, cosine; current generator defaults: device `auto`, float32, workers `0` | Implemented; full settings and historical exceptions in Appendix A.3 |
+| Original 13 datasets, primary pair | Named torchvision `ResNet34_Weights.IMAGENET1K_V1` / `ResNet18_Weights.IMAGENET1K_V1`, adapted stems as above; new seeded class-count-specific heads; full-network fine-tuning; SGD LR `0.001`, momentum `0.9`, decay `0.0005`, batch `128`, cosine | Implemented; not the frozen TPAMI/from-scratch settings |
+| Optional compact pairs | From scratch; SGD LR `0.05`, momentum `0.9`, decay `0.0005`, batch `128`, cosine | Retained in Appendix A.3 |
 | Colored MNIST teacher/students | From scratch; SGD LR `0.05`, momentum `0.9`, decay `0.0005`, batch `128`, cosine | Implemented |
 | Waterbirds / UrbanCars teacher/students | Torchvision `ResNet34_Weights.IMAGENET1K_V1` / `ResNet18_Weights.IMAGENET1K_V1`; seeded new two-class heads; SGD LR `0.001`, momentum `0.9`, decay `0.0005`, batch `32`, cosine | Implemented; weight retrieval occurs only when training is explicitly launched |
 | Shortcut repair | Section 5.2's group-balanced replay, six-candidate grid and preservation limits; SGD momentum `0.9`, no decay, cosine | Implemented |
@@ -226,7 +254,7 @@ are distinct. New teachers require verified repair masks/feature maps, not merel
 a working KD factory. Small-stem, `32 x 32`, profile-budget adaptations are not
 reproductions of published ImageNet/CIFAR scores. The full-benchmark pairings are those
 declared in Section 3.1; literature examples do not expand the study automatically.
-The two implemented matrix presets cover the original 13 datasets/four profiles;
+The three implemented matrix presets cover the original 13 datasets/four profiles;
 additional unsupported pairings remain future work.
 
 ## 4. Downstream knowledge distillation
@@ -274,6 +302,11 @@ reference in Appendix A.4, but targeting and selection follow the dataset family
 For the original 13 datasets, retain Appendix A.4's hard-example/class policy,
 same-class feature companions, replay/loss/masks, six-candidate grid, and strict
 validation target-recall improvement with the overall accuracy guardrail.
+For the primary adapted 32-pixel protocol, repair batch size is `64`, localization
+batch size `16`, and ablation-screening batch size `128`, matching the compact
+repair schedule. With `640` samples per stream and `20` epochs this gives `200`
+optimizer updates per candidate. These are explicit defaults, not a measured
+GPU-memory guarantee.
 Balanced profiles target all classes; long-tail profiles target the declared
 lowest-frequency classes. This is class-based repair, not a nuisance-group
 robustness result.
@@ -315,7 +348,8 @@ Its primary paper, [Section 6.3](https://doi.org/10.1145/3460120.3484818), repor
 This supports retaining 20 as a reference budget, not asserting it is best for
 this project's different datasets, architectures, or preservation losses.
 
-The class-family replay converts 20 epochs into 200 updates (Appendix A.4).
+The compact class-family replay converts 20 epochs into 200 updates (Appendix A.4);
+the primary adapted class-family repair also uses 200 updates (Section 5.1).
 Section 5.2 gives the shortcut family's explicit replay/update counts; 20 repair
 epochs are not 20 full passes over Waterbirds or UrbanCars.
 A prespecified `5/10/20/40` sensitivity study remains optional future work:
@@ -471,25 +505,28 @@ reproducibility; freeze gates do not undo prior test inspection.
 Dataset counts, training settings, and evaluation endpoints are different units.
 Under Section 3.1's pair choices, the implemented planner scope is:
 
-| Family | Datasets | Training settings: one class-family pair | Training settings: both class-family pairs | Final endpoint panels: one / both |
+| Family | Datasets | Training settings: primary pair | Training settings: primary + compact ConvNet | Final endpoint panels: one / two pairs |
 |---|---:|---:|---:|---|
 | Class / long-tail: 13 x 4 profiles | 13 | 52 | 104 | 52 / 104 |
 | Shortcut: one native setting per dataset | 3 | 3 | 3 | 4 / 4 |
 | Full experiment | 16 | 55 | 107 | 56 / 108 |
 
 These are **setting counts**, not completed experiments or training-fit totals.
-Both-pair expansion applies only to the original 13; the
+Pair expansion applies only to the original 13; the
 three shortcut datasets retain their declared single pair. Colored MNIST has
 one training setting and two correlated test panels.
 
 Do not multiply all 16 by four profiles. Maximum fresh-fit counts (one teacher
 seed and three paired students) are `3,153` for the default full plan and `6,057`
-for both class-family pairs, including the three mechanism controls on each
+for the primary plus compact ConvNet pair, including the three mechanism controls on each
 shortcut dataset. The shortcut family adds at most `249` fits: `33` ordinary
 teachers + `72` repair candidates + `135` KD students + `9` supervised students.
 Conditional Balanced Softmax omissions, infeasible candidates and verified
 control aliases reduce actual fits. Appendix A.6's `2,904/5,808` maxima remain
 correct for the original 13-dataset subset only.
+Selecting all three class-family presets produces `159` settings, `160` endpoint
+panels and at most `8,961` fits. Different resolutions/initializations remain
+separate panels; equal fit counts do not imply equal computational cost.
 
 Report completed / eligible recipes separately from mechanism controls and
 supervised references. Count shared fits once and check endpoint completeness
@@ -505,7 +542,7 @@ into new 100/20-epoch comparisons.
 ## 9. Execution readiness and pre-run checks
 
 The [planner](../kd/teacher_baseline_matrix.py) now defaults to all 16 datasets:
-55 settings, or 107 with both class-family pairs. The
+55 settings, or 107 with the primary plus compact ConvNet pair. The
 [full benchmark driver](../kd/full_benchmark.py) provides local-data preflight,
 execution/resume, gated test evaluation and a source-bound overview. It stops
 on an execution error; it does not silently skip a missing dataset. Existing
@@ -532,16 +569,16 @@ python -m kd.shortcut_data colored_mnist --root data --download-mnist
 
 # Inspect the complete scope without writes, downloads or fitting.
 python -m kd.teacher_baseline_matrix plan \
-  --root data --output runs/teacher-baselines-v5/matrix-plan \
+  --root data --output runs/teacher-baselines-v7/matrix-plan \
   --epochs 100 --dry-run
 
 # Materialize a fresh source-bound plan. Choose runtime here, not via later overrides.
 python -m kd.teacher_baseline_matrix plan \
-  --root data --output runs/teacher-baselines-v5/matrix-plan \
+  --root data --output runs/teacher-baselines-v7/matrix-plan \
   --epochs 100 --device cuda --precision float32 --workers 4
 ```
 
-Add `--pairs convnet6 resnet34_resnet18` when creating the plan for 107 settings;
+Add `--pairs resnet34_resnet18_smallstem_imagenet convnet6` when creating the plan for 107 settings;
 the option expands only the original 13 datasets. `--datasets` can explicitly
 restrict a diagnostic/subset plan, but such a plan is not the full experiment.
 Plan, dataset cache and study output roots must be disjoint.
@@ -549,11 +586,11 @@ Plan, dataset cache and study output roots must be disjoint.
 ### 9.2. Preflight, train, evaluate and report
 
 ```bash
-python -m kd.full_benchmark preflight --plan runs/teacher-baselines-v5/matrix-plan
-python -m kd.full_benchmark train --plan runs/teacher-baselines-v5/matrix-plan
-python -m kd.full_benchmark evaluate --plan runs/teacher-baselines-v5/matrix-plan
-python -m kd.full_benchmark report --plan runs/teacher-baselines-v5/matrix-plan \
-  --output runs/teacher-baselines-v5/overview
+python -m kd.full_benchmark preflight --plan runs/teacher-baselines-v7/matrix-plan
+python -m kd.full_benchmark train --plan runs/teacher-baselines-v7/matrix-plan
+python -m kd.full_benchmark evaluate --plan runs/teacher-baselines-v7/matrix-plan
+python -m kd.full_benchmark report --plan runs/teacher-baselines-v7/matrix-plan \
+  --output runs/teacher-baselines-v7/overview
 ```
 
 Preflight checks all local training/validation datasets without fetching weights
@@ -577,6 +614,9 @@ has its own manifest. Overview reporting checks the exact frozen matrix job and
 selected checkpoints, writes to a separate directory and retains pending,
 invalid or unavailable endpoints with reasons and empty measurements, never
 zero gains. Repair accept/no-change details remain in each study's report.
+Preflight checks each distinct dataset/input-protocol/resolution contract; it
+does not audit ImageNet duplicates. Pretraining-overlap warnings persist in the
+JSON and Markdown overview, including when results are still pending.
 
 ## 10. Final-results tables
 
@@ -622,7 +662,7 @@ details the implemented class-family fields.
 ### 10.2. Full 16-dataset overview
 
 This example includes all 16 datasets: the 13 class datasets at `lt-if100`
-and a declared class-family pair, plus the three native shortcut settings with
+with the primary pretrained ResNet-34 -> ResNet-18 pair at 32 pixels, plus the three native shortcut settings with
 Section 3.1's assigned pairs. Colored MNIST contributes two endpoint rows.
 For other class profiles/pairs, repeat their class rows with the correct `M`;
 do not retrain/count the shortcut settings once per class profile.
@@ -632,7 +672,7 @@ do not retrain/count the shortcut settings once per class profile.
 | CIFAR-10 / `lt-if100` | BAcc | — | — | — | — | — | — | Full-run results pending |
 | CIFAR-100 / `lt-if100` | BAcc | — | — | — | — | — | — | Full-run results pending |
 | SVHN / `lt-if100` | BAcc | — | — | — | — | — | — | Full-run results pending |
-| CINIC-10 / `lt-if100` | BAcc | — | — | — | — | — | — | Full-run results pending |
+| CINIC-10 / `lt-if100` | BAcc | — | — | — | — | — | — | Not run; pretraining overlap unaudited |
 | GTSRB / `lt-if100` | BAcc | — | — | — | — | — | — | Full-run results pending |
 | Fashion-MNIST / `lt-if100` | BAcc | — | — | — | — | — | — | Full-run results pending |
 | PathMNIST / `lt-if100` | BAcc | — | — | — | — | — | — | Full-run results pending |
@@ -641,7 +681,7 @@ do not retrain/count the shortcut settings once per class profile.
 | OrganAMNIST / `lt-if100` | BAcc | — | — | — | — | — | — | Full-run results pending |
 | Caltech-101 / `lt-if100` | BAcc | — | — | — | — | — | — | Full-run results pending |
 | EuroSAT / `lt-if100` | BAcc | — | — | — | — | — | — | Full-run results pending |
-| STL-10 / `lt-if100` | BAcc | — | — | — | — | — | — | Full-run results pending |
+| STL-10 / `lt-if100` | BAcc | — | — | — | — | — | — | Not run; pretraining overlap unaudited |
 | Colored MNIST / reversed color (`0.9` mismatch) | WGA | — | — | — | — | — | — | Not run |
 | Colored MNIST / unbiased color (`0.5` mismatch) | WGA | — | — | — | — | — | — | Not run; shared test digits |
 | Waterbirds / released test | WGA | — | — | — | — | — | — | Not run; provision local release |
@@ -657,15 +697,15 @@ single unqualified average; Appendix A.9 defines class-family summaries.
 ## Appendix A. Retained 13-dataset reference and historical evidence
 
 The original 13 datasets remain an active part of the full 16-dataset scope.
-This appendix centralizes their exact implemented class-family settings and
-historical evidence; it does not defer or remove them from the full experiment.
+This appendix centralizes the optional compact presets and historical evidence.
+It is not the primary pretrained protocol; Sections 1-9 define that protocol.
 Shared losses/recipes are in Sections 4 and 6. Historical frozen settings remain
 authoritative and distinct from new standardized runs.
 
 ### A.1. Dataset reference
 
 The full roster, source IDs/releases, class counts, dimensions, and split rules
-are maintained once in Sections 1.1-1.2. The original 13 use RGB `32 x 32`,
+are maintained once in Sections 1.1-1.2. These compact presets use RGB `32 x 32`,
 split seed `2026`, and profile sampling only on train/validation.
 Their horizontal-flip policy is in Section 2.1; exact views/normalization follow.
 Source: [versioned dataset catalog](../kd/catalog/v1.json).
@@ -969,12 +1009,12 @@ jq '{datasets, profiles, job_count: (.jobs | length)}' \
   runs/experiment1-multidataset/matrix-plan/protocol.json
 
 python -m kd.teacher_baseline_matrix plan \
-  --output runs/teacher-baselines-v5/class-reference-plan --epochs 100 --dry-run \
+  --output runs/teacher-baselines-v7/class-reference-plan --epochs 100 --pairs convnet6 --dry-run \
   --datasets cifar10 cifar100 svhn cinic10 gtsrb fashionmnist pathmnist \
   bloodmnist dermamnist organamnist caltech101 eurosat stl10
 
 python -m kd.teacher_baseline_matrix plan \
-  --output runs/teacher-baselines-v5/class-reference-plan --epochs 100 \
+  --output runs/teacher-baselines-v7/class-reference-plan --epochs 100 \
   --pairs convnet6 resnet34_resnet18 --dry-run \
   --datasets cifar10 cifar100 svhn cinic10 gtsrb fashionmnist pathmnist \
   bloodmnist dermamnist organamnist caltech101 eurosat stl10
@@ -1086,4 +1126,9 @@ per student seed on that fixed set, then compute SD across those three means;
 averaging the individual setting SDs is not an aggregate SD.
 
 Historical 49/71/81-epoch outcomes in Appendix A.6 remain a separate results panel.
-They must not fill blank cells in these standardized 100/20-epoch tables.
+They must not fill blank cells in these standardized 100/20-epoch tables. Nor may
+from-scratch compact results be relabeled as adapted-pretrained outcomes. Equal
+input sizes do not make this a pretraining-only ablation: normalization and LR
+also differ between the declared presets. Preserve
+pretraining-overlap disclosures and use common audited/unaudited eligibility
+sets explicitly if making any cross-dataset summary.

@@ -91,10 +91,12 @@ This condition starts from **the same trained CE control checkpoint** used by
 `run_neuron_surgery_study` with `downstream_kd=false`; that mode localizes channels,
 repairs candidates, and selects a teacher using validation only. The common
 benchmark then runs fresh matched KD students and controls all final test access.
-The original repair implementation and its saved results are not rewritten.
+The original repair algorithm and saved results are preserved; input-protocol
+metadata is carried explicitly for adapted pretrained runs.
 
 The default repair grid retains channel budgets 2/4/8, learning rates
-0.001/0.005, 20 repair epochs, 640 samples per stream per epoch, batch size 64,
+0.001/0.005, 20 repair epochs, 640 samples per stream per epoch, batch size 64 for
+the class-family 32-pixel presets (including adapted pretrained ResNets),
 same-class companions, bootstrap screening, causal validation, and the original
 logit/feature preservation objective. Localization uses training examples.
 Balanced profiles target all classes; long-tail profiles target the lowest-frequency
@@ -236,28 +238,36 @@ RandAugment or proven task invariances; dataset-level review remains necessary.
 
 ## All-dataset matrix
 
-`kd.teacher_baseline_matrix` generates configurations for all 13 catalog datasets
-at balanced/IF10/IF50/IF100 profiles. It reuses the main matrix's split, flip,
-class-head, and epoch policies (81/49/71/81 epochs), with explicit runtime
-defaults of device `auto`, precision `float32`, workers `0`, and sparse repair
-fallback enabled. These defaults are independent of the two original static
-pilot JSONs, which remain unchanged.
+`kd.teacher_baseline_matrix` now covers the full 16-dataset benchmark: four
+profiles on the original 13 catalog datasets, plus one native setting on each
+shortcut dataset. Its primary class-family preset is `resnet34_resnet18_smallstem_imagenet`:
+adapted small-stem ResNet-34 -> ResNet-18, both derived from `IMAGENET1K_V1`,
+seeded new heads, 32-pixel ImageNet-normalized inputs and full fine-tuning. The
+stem adaptation is declared in experiment settings; these are not official
+small-image pretrained weight releases. New teacher/student
+budgets are uniformly 100 epochs; repair remains 20. Historical 81/49/71/81
+budgets, original static pilot JSONs and the TPAMI `main` branch remain unchanged.
+The exact optimization, views, repair batches and overlap disclosures are in
+[experiment settings](experiment-settings.md).
 
-Supported pairing presets are `convnet6` (ConvNet-6-W32 -> ConvNet-6-W16) and
-`resnet34_resnet18` (small-stem ResNet-34 -> ResNet-18). The default one-pair plan
-has 52 settings and at most 2,904 fits; both pairings have 104 settings and at most
-5,808 fits. These are planned upper bounds, not completed training. Other
-literature pairings remain pending model/repair-map integration.
+Optional compact presets `convnet6` and `resnet34_resnet18` retain 32-pixel,
+from-scratch architectures. The default full plan has 55 settings and at most
+3,153 fits; primary plus compact ConvNet has 107 settings and at most 6,057 fits.
+All three class-family presets give 159 settings and at most 8,961 fits. These
+are upper bounds, not completed training or equal-compute comparisons. Colored
+MNIST stays at 32 pixels from scratch; Waterbirds/UrbanCars stay pretrained at
+224/256 pixels. CINIC-10/STL-10 pretraining overlap is explicitly unaudited.
+Other literature pairings remain pending model/repair-map integration.
 
 ```bash
 # Read-only: all datasets/profiles, no writes or dataset/model access.
 python -m kd.teacher_baseline_matrix plan \
-  --output runs/teacher-baselines-v3/matrix-plan --dry-run
+  --output runs/teacher-baselines-v7/matrix-plan --dry-run
 
-# Both supported architecture pairs; still read-only.
+# Primary pretrained pair plus compact reference; still read-only.
 python -m kd.teacher_baseline_matrix plan \
-  --output runs/teacher-baselines-v3/matrix-plan \
-  --pairs convnet6 resnet34_resnet18 --dry-run
+  --output runs/teacher-baselines-v7/matrix-plan \
+  --pairs resnet34_resnet18_smallstem_imagenet convnet6 --dry-run
 ```
 
 Without `--dry-run`, planning writes only `protocol.json`, `configs/*.json`, and

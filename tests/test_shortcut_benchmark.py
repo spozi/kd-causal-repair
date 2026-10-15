@@ -240,7 +240,7 @@ class FullPlannerTests(unittest.TestCase):
             self.assertEqual(len(plan["datasets"]), 16)
             self.assertEqual(plan["job_count"], 55)
             self.assertEqual(plan["counts"]["total_fits_max"], 3153)
-            expanded = plan_matrix(root / "expanded", root=root / "data", pairs=tuple(PAIRINGS))
+            expanded = plan_matrix(root / "expanded", root=root / "data", pairs=("resnet34_resnet18_smallstem_imagenet", "convnet6"))
             self.assertEqual(expanded["job_count"], 107)
             self.assertEqual(list(root.iterdir()), [])
             self.assertEqual(len([job for job in expanded["jobs"] if job.get("evaluation_family") == "shortcut"]), 3)
@@ -308,7 +308,7 @@ class FullPlannerTests(unittest.TestCase):
         self.assertEqual(left.backbone.fc.out_features, 2)
         self.assertIn("weights_tensor_sha256", left.initialization)
         with self.assertRaises(ValueError):
-            create_model("resnet18_smallstem", 2, weights="IMAGENET1K_V1")
+            create_model("convnet6_w16", 2, weights="IMAGENET1K_V1")
 
 
 class ShortcutLifecycleTests(unittest.TestCase):

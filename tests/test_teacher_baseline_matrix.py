@@ -1,4 +1,4 @@
-"""Offline validation of the all-dataset baseline matrix planner."""
+"""Compact-protocol regression checks; transfer defaults are tested separately."""
 
 import contextlib
 from dataclasses import replace
@@ -15,6 +15,24 @@ from kd.teacher_baseline_matrix import (DEFAULT_EPOCHS, PAIRINGS, main, material
                                         matrix_jobs, plan_matrix)
 from kd.matrix_binding import (MATRIX_SOURCE_FILES, STUDY_SOURCE_FILES, matrix_payload_digest)
 from kd.teacher_training import RECIPES
+
+
+# Keep the original preset's regression contracts explicit, independent of the
+# new pretrained default. These wrappers still exercise the production planner.
+COMPACT_PAIRINGS = ("convnet6", "resnet34_resnet18")
+_matrix_jobs, _plan_matrix, _materialize_matrix_plan = matrix_jobs, plan_matrix, materialize_matrix_plan
+
+
+def matrix_jobs(*args, **kwargs):
+    return _matrix_jobs(*args, **{"pairs": ("convnet6",), **kwargs})
+
+
+def plan_matrix(*args, **kwargs):
+    return _plan_matrix(*args, **{"pairs": ("convnet6",), **kwargs})
+
+
+def materialize_matrix_plan(*args, **kwargs):
+    return _materialize_matrix_plan(*args, **{"pairs": ("convnet6",), **kwargs})
 
 
 class TeacherBaselineMatrixTests(unittest.TestCase):
@@ -64,7 +82,7 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
                     self.assertEqual(plan["repair_protocols"][0]["stages"], ["stage2", "stage3"])
 
     def test_optional_two_pairings_have_104_valid_settings(self):
-        jobs = matrix_jobs(datasets=tuple(DATASETS), pairs=tuple(PAIRINGS))
+        jobs = matrix_jobs(datasets=tuple(DATASETS), pairs=COMPACT_PAIRINGS)
         self.assertEqual(len(jobs), 104)
         self.assertEqual(len({job["id"] for job in jobs}), 104)
         with tempfile.TemporaryDirectory() as temporary:
@@ -97,7 +115,7 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
                 "repair_candidate_fits_max": 312, "kd_student_fits_max": 1866,
                 "supervised_student_fits": 156, "total_fits_max": 2904})
             self.assertIn("upper bounds", plan["counts_note"])
-            doubled = plan_matrix(Path(temporary) / "two-pairs", datasets=tuple(DATASETS), pairs=tuple(PAIRINGS))
+            doubled = plan_matrix(Path(temporary) / "two-pairs", datasets=tuple(DATASETS), pairs=COMPACT_PAIRINGS)
             self.assertEqual(doubled["job_count"], 104)
             self.assertEqual(doubled["counts"], {key: value * 2 for key, value in plan["counts"].items()})
 
@@ -113,7 +131,7 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     main(["plan", "--output", str(output), "--root", str(data), "--run-root", str(runs),
-                          "--datasets", "cifar10", "--profiles", "lt-if100", "--dry-run"])
+                          "--datasets", "cifar10", "--profiles", "lt-if100", "--pairs", "convnet6", "--dry-run"])
                 self.assertEqual(json.loads(stdout.getvalue()), plan)
             self.assertEqual(list(root.iterdir()), [])
 
@@ -337,7 +355,7 @@ class TeacherBaselineMatrixTests(unittest.TestCase):
                          {"balanced": 81, "lt-if10": 49, "lt-if50": 71, "lt-if100": 81})
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            plan = plan_matrix(root / "plan", pairs=tuple(PAIRINGS), epochs=120)
+            plan = plan_matrix(root / "plan", pairs=COMPACT_PAIRINGS, epochs=120)
             self.assertEqual(plan["version"], 2)
             self.assertEqual(plan["epoch_policy"], {
                 "teacher_student_epochs": 120,

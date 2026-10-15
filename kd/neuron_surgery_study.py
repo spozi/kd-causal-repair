@@ -109,6 +109,9 @@ class NeuronSurgerySpec:
     channel_selection: str = "screened"
     channel_selection_seed: int = 2026
     hard_source: str = "train"
+    dataset_preprocessing: str = "legacy"
+    localization_batch_size: int = 16
+    screening_batch_size: int = 128
 
     def validate(self) -> None:
         if not self.name or Path(self.name).name != self.name:
@@ -154,9 +157,15 @@ class NeuronSurgerySpec:
             raise ValueError("Derived target class policies require target_classes=null")
         if self.target_class_policy == "frequency_tail" and self.imbalance_factor == 1:
             raise ValueError("frequency_tail requires an imbalanced dataset profile")
+        if self.dataset_preprocessing not in {"legacy", "imagenet-transfer-v1", "imagenet-smallstem-v1"}:
+            raise ValueError("Unknown study input protocol")
+        size = 224 if self.dataset_preprocessing == "imagenet-transfer-v1" else 32
         if (self.dataset_source not in CATALOG_SOURCES
-                or self.dataset_num_classes < 2 or self.dataset_image_size != 32):
-            raise ValueError("Study dataset must be a supported 32x32 classification source")
+                or self.dataset_num_classes < 2 or self.dataset_image_size != size):
+            raise ValueError(f"Study dataset must be a supported {size}x{size} classification source")
+        for count in (self.localization_batch_size, self.screening_batch_size):
+            if type(count) is not int or count < 1:
+                raise ValueError("Localization/screening batch sizes must be positive integers")
         if (self.target_classes is not None
                 and any(label < 0 or label >= self.dataset_num_classes
                         for label in self.target_classes)):
@@ -174,7 +183,13 @@ class NeuronSurgerySpec:
                 raise ValueError("Study baseline run names must be single directory names")
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        value = asdict(self)
+        # Preserve historical JSON identities for the default compact protocol.
+        for name, default in (("dataset_preprocessing", "legacy"),
+                              ("localization_batch_size", 16), ("screening_batch_size", 128)):
+            if value[name] == default:
+                value.pop(name)
+        return value
 
 
 def neuron_surgery_spec_from_dict(raw: dict) -> NeuronSurgerySpec:
@@ -339,12 +354,12 @@ def _load_inputs(baseline: str | Path, seeds: tuple[int, ...],
     factor = ({"lt-if10": 10.0, "lt-if50": 50.0, "lt-if100": 100.0}
               .get(teacher_config.data.dataset_profile, teacher_config.data.imbalance_factor))
     teacher_recipe = (teacher_config.data.source, teacher_config.data.num_classes,
-                      teacher_config.data.image_size, teacher_config.data.dataset_version,
+                      teacher_config.data.image_size, teacher_config.data.preprocessing, teacher_config.data.dataset_version,
                       teacher_config.data.dataset_profile, factor,
                       teacher_config.data.split_seed, teacher_config.data.confirmation_fraction,
                       teacher_config.student.name, teacher_config.distillation.method,
                       teacher_config.train.seed, teacher_config.train.epochs)
-    expected_teacher = (spec.dataset_source, spec.dataset_num_classes, spec.dataset_image_size,
+    expected_teacher = (spec.dataset_source, spec.dataset_num_classes, spec.dataset_image_size, spec.dataset_preprocessing,
                         spec.dataset_version, resolved_dataset_profile(spec),
                         spec.imbalance_factor, spec.split_seed,
                         spec.confirmation_fraction, spec.teacher_model, "supervised",
@@ -585,7 +600,7 @@ def _train_candidate(directory: Path, identity: dict, teacher_config, teacher_ch
     candidate = create_model(spec.teacher_model, teacher_config.data.num_classes)
     load_model_checkpoint(candidate, teacher_checkpoint,
                           metadata(spec.teacher_model, classes, teacher_config.data.image_size,
-                                   teacher_config.data.source))
+                                   teacher_config.data.source, preprocessing=teacher_config.data.preprocessing))
     history, verification = train_repair_candidate(
         candidate, anchor, dataset, labels, target_indices, preservation_indices, channels,
         device, epochs=spec.repair_epochs, samples_per_epoch=spec.repair_samples_per_epoch,
@@ -602,7 +617,7 @@ def _train_candidate(directory: Path, identity: dict, teacher_config, teacher_ch
         precision=teacher_config.train.precision,
         channels_last=teacher_config.train.channels_last)
     checkpoint = {**metadata(spec.teacher_model, classes, teacher_config.data.image_size,
-                             teacher_config.data.source), "kind": "inference",
+                             teacher_config.data.source, preprocessing=teacher_config.data.preprocessing), "kind": "inference",
                   "epoch": spec.repair_epochs - 1, "student": candidate.cpu().state_dict(),
                   "repair": {"format_version": FORMAT_VERSION,
                              "base_checkpoint": str(teacher_checkpoint),
@@ -694,7 +709,7 @@ def _model(config, checkpoint, classes):
     model = create_model(config.student.name, config.data.num_classes)
     state = load_model_checkpoint(model, checkpoint,
                                   metadata(config.student.name, classes, config.data.image_size,
-                                           config.data.source))
+                                           config.data.source, preprocessing=config.data.preprocessing))
     model.requires_grad_(False).eval()
     return model, state
 
@@ -812,7 +827,7 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
     teacher_state = load_model_checkpoint(
         teacher, teacher_checkpoint,
         metadata(spec.teacher_model, diagnostic_data.classes, teacher_config.data.image_size,
-                 teacher_config.data.source))
+                 teacher_config.data.source, preprocessing=teacher_config.data.preprocessing))
     if teacher_state.get("epoch", -1) < 0:
         raise ValueError("Repair teacher checkpoint must come from a completed training epoch")
     prepare_model(teacher, resolved_device,
@@ -906,7 +921,7 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
     scores = _stage_npz(
         directory / "differential_scores.npz", score_identity,
         lambda: differential_channel_scores(teacher, repair_pool, companions,
-                                            resolved_device, batch_size=16, stages=stages,
+                                            resolved_device, batch_size=spec.localization_batch_size, stages=stages,
                                             score_mode=spec.score_mode))
     consensus_identity = {"protocol_sha256": protocol_sha256,
                           "scores_sha256": fingerprint(directory / "differential_scores.npz")}
@@ -918,11 +933,11 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
 
     target_loader = DataLoader(Subset(repair_pool,
                                       [row["index"] for row in target_plan["targets"]]),
-                               batch_size=128, shuffle=False, num_workers=0,
+                               batch_size=spec.screening_batch_size, shuffle=False, num_workers=0,
                                **loader_performance_kwargs(str(resolved_device), 0))
     preservation_loader = DataLoader(Subset(repair_pool,
                                             target_plan["causal_preservation_indices"]),
-                                     batch_size=128, shuffle=False, num_workers=0,
+                                     batch_size=spec.screening_batch_size, shuffle=False, num_workers=0,
                                      **loader_performance_kwargs(str(resolved_device), 0))
     causal_identity = {"protocol_sha256": protocol_sha256,
                        "consensus_sha256": fingerprint(directory / "consensus_scores.json"),

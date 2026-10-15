@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 from torchvision import models
 
 
@@ -61,8 +62,8 @@ class ResNetAdapter(VisionModel):
         super().__init__()
         builders = {"resnet18": models.resnet18, "resnet34": models.resnet34, "resnet50": models.resnet50}
         if weights is not None:
-            if cifar_stem or weights != "IMAGENET1K_V1":
-                raise ValueError("Pretrained initialization requires ordinary stems and an explicit IMAGENET1K_V1 release")
+            if weights != "IMAGENET1K_V1":
+                raise ValueError("Pretrained initialization requires an explicit IMAGENET1K_V1 release")
             release = getattr(models, f"ResNet{name.removeprefix('resnet')}_Weights").IMAGENET1K_V1
             self.backbone = builders[name](weights=release)
             from .checkpoints import tensor_state_fingerprint
@@ -82,9 +83,26 @@ class ResNetAdapter(VisionModel):
         else:
             self.backbone = builders[name](weights=None, num_classes=num_classes)
         if cifar_stem:
+            original_stem = self.backbone.conv1.weight.detach().clone() if weights is not None else None
             self.backbone.conv1 = nn.Conv2d(3, 64, 3, stride=1, padding=1, bias=False)
-            # torchvision's own initialization for its convolutions.
-            nn.init.kaiming_normal_(self.backbone.conv1.weight, mode="fan_out", nonlinearity="relu")
+            if original_stem is None:
+                # Preserve the original from-scratch small-stem initialization.
+                nn.init.kaiming_normal_(self.backbone.conv1.weight, mode="fan_out", nonlinearity="relu")
+            else:
+                adapted = F.interpolate(original_stem, size=(3, 3), mode="bilinear", align_corners=False)
+                old_norm = original_stem.square().sum((1, 2, 3), keepdim=True).sqrt()
+                new_norm = adapted.square().sum((1, 2, 3), keepdim=True).sqrt()
+                if (not torch.isfinite(adapted).all() or not torch.isfinite(old_norm).all()
+                        or not torch.isfinite(new_norm).all() or ((new_norm == 0) & (old_norm > 0)).any()):
+                    raise ValueError("Pretrained stem cannot be resized while preserving filter norms")
+                scale = old_norm / new_norm.clamp_min(torch.finfo(adapted.dtype).tiny)
+                with torch.no_grad():
+                    self.backbone.conv1.weight.copy_(adapted * scale)
+                self.initialization["stem_adaptation"] = {
+                    "name": "bilinear_l2_7to3_v1", "source_kernel": [7, 7], "target_kernel": [3, 3],
+                    "stride": [1, 1], "maxpool": "identity", "classifier": "new seeded head",
+                    "adapted_stem_tensor_sha256": tensor_state_fingerprint({"conv1.weight": self.backbone.conv1.weight}),
+                    "retained": "all pretrained backbone/BatchNorm tensors except the transformed conv1 and replaced fc"}
             self.backbone.maxpool = nn.Identity()
         expansion = 4 if name == "resnet50" else 1
         self.feature_channels = {f"stage{i}": width * expansion
@@ -215,9 +233,10 @@ def create_model(name: str, num_classes: int, *, weights=None) -> VisionModel:
     """A single factory keeps architecture selection out of training and losses."""
     name = canonical_model_name(name)
     if weights is not None:
-        if name not in {"resnet18", "resnet34", "resnet50"}:
-            raise ValueError("Pretrained weights are supported for ordinary-stem ResNets only")
-        return ResNetAdapter(name, num_classes, weights=weights)
+        small = name in {"cifar_resnet18", "cifar_resnet34", "cifar_resnet50"}
+        if not small and name not in {"resnet18", "resnet34", "resnet50"}:
+            raise ValueError("Pretrained weights are supported for ResNet adapters only")
+        return ResNetAdapter(name.removeprefix("cifar_"), num_classes, cifar_stem=small, weights=weights)
     tiny_widths = {"tiny_small": (16, 32, 64), "tiny_medium": (32, 64, 128),
                    "tiny_large": (64, 128, 256)}
     if name in tiny_widths:

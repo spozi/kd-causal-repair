@@ -77,7 +77,7 @@ def study_spec(job):
 
 
 class ExperimentSettingsTests(unittest.TestCase):
-    def test_every_supported_pair_has_matched_default_teacher_student_settings(self):
+    def test_compact_pairs_have_matched_teacher_student_settings(self):
         for job in matrix_jobs(datasets=tuple(DATASETS), pairs=("convnet6", "resnet34_resnet18")):
             with self.subTest(job=job["id"]):
                 spec = study_spec(job)

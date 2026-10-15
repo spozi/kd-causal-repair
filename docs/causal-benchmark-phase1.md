@@ -5,7 +5,9 @@ Shortcut design selected: 14 October 2026; full scope clarified: 15 October 2026
 companion covers Colored MNIST, Waterbirds, and UrbanCars within the
 [full 16-dataset experiment](experiment-settings.md#11-complete-16-dataset-roster).
 The original 13 datasets remain in that experiment with their class/long-tail
-rules. Historical configuration identities, checkpoints, and saved results
+rules; their new primary pair is adapted pretrained ResNet-34 -> ResNet-18 at 32 pixels.
+The three shortcut settings below are unchanged by that transfer-default update.
+Historical configuration identities, checkpoints, and saved results
 are unchanged. The filename is retained for existing links. Exact numerical
 defaults and execution commands are maintained in the main settings document;
 this companion explains research provenance and interpretation limits.

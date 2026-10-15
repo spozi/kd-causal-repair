@@ -1,7 +1,8 @@
 """Adapt the existing validation-only repair study to the teacher benchmark.
 
-The original repair implementation is used without edits. Its downstream KD and
-test evaluation are disabled so the benchmark can enforce one common test gate.
+The original repair algorithm is reused with explicit input-protocol metadata.
+Its downstream KD and test evaluation are disabled so the benchmark can enforce
+one common test gate.
 """
 
 from dataclasses import asdict, dataclass
@@ -85,6 +86,9 @@ def repair_spec(study, seed):
         stages=stages, downstream_kd=False, expected_train_counts=None, expected_target_counts=None,
         dataset_source=data.source, dataset_num_classes=data.num_classes,
         dataset_image_size=data.image_size, dataset_version=data.dataset_version,
+        dataset_preprocessing=data.preprocessing,
+        localization_batch_size=2 if data.preprocessing == "imagenet-transfer-v1" else 16,
+        screening_batch_size=16 if data.preprocessing == "imagenet-transfer-v1" else 128,
         dataset_profile=(None if data.dataset_profile == "balanced" and factor > 1 else data.dataset_profile),
         imbalance_factor=factor, **asdict(options))
     result.validate()
@@ -167,6 +171,8 @@ def train_repair_teacher(study, config):
                "training_seconds": base["training_seconds"] + elapsed,
                "repair_phase_seconds": elapsed,
                "timing_scope": "base-teacher train/validation time plus successful repair invocation; excludes prior interrupted invocations"}
+    if "initialization" in base:
+        summary["initialization"] = base["initialization"]
     write_json(directory / "summary.json", summary)
     write_manifest(directory, "completion.json", REPAIR_FILES)
     verify_repair_details(directory)

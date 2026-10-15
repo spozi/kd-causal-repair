@@ -169,7 +169,8 @@ def run_experiment(config: ExperimentConfig, *, resume: str | None = None) -> di
     training_data_identity = bind_training_data(data.provenance)
     student = create_model(config.student.name, config.data.num_classes,
                            **({"weights": config.student.weights} if config.student.weights else {}))
-    student_metadata = metadata(config.student.name, data.classes, config.data.image_size, config.data.source)
+    student_metadata = metadata(config.student.name, data.classes, config.data.image_size, config.data.source,
+                                preprocessing=config.data.preprocessing)
     if config.student.checkpoint:
         load_model_checkpoint(student, config.student.checkpoint, student_metadata)
     initial_student_sha256 = tensor_state_fingerprint(student.state_dict())
@@ -180,7 +181,8 @@ def run_experiment(config: ExperimentConfig, *, resume: str | None = None) -> di
     if config.distillation.method != "supervised":
         teacher = create_model(config.teacher.name, config.data.num_classes)
         teacher_state = load_model_checkpoint(teacher, config.teacher.checkpoint,
-                                               metadata(config.teacher.name, data.classes, config.data.image_size, config.data.source))
+                                               metadata(config.teacher.name, data.classes, config.data.image_size, config.data.source,
+                                                        preprocessing=config.data.preprocessing))
         if teacher_state.get("epoch", -1) < 0:
             raise ValueError("Teacher checkpoint must come from a completed training epoch")
         teacher_hash = fingerprint(config.teacher.checkpoint)
@@ -369,7 +371,8 @@ def evaluate_checkpoint(config: ExperimentConfig, checkpoint: str, split: str = 
     if loader is None:
         raise ValueError(f"Dataset has no {split} split")
     model = create_model(config.student.name, config.data.num_classes)
-    load_model_checkpoint(model, checkpoint, metadata(config.student.name, data.classes, config.data.image_size, config.data.source))
+    load_model_checkpoint(model, checkpoint, metadata(config.student.name, data.classes, config.data.image_size, config.data.source,
+                                                     preprocessing=config.data.preprocessing))
     prepare_model(model, device, config.train.channels_last)
     cost = benchmark(model, config.data.image_size, device, config.benchmark,
                      precision=config.train.precision,

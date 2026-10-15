@@ -42,10 +42,13 @@ def tensor_state_fingerprint(state: dict) -> str:
     return digest.hexdigest()
 
 
-def metadata(model_name: str, classes: list[str], image_size: int, source: str = "imagefolder") -> dict:
-    mean, std = normalization(source)
+def metadata(model_name: str, classes: list[str], image_size: int, source: str = "imagefolder", *, preprocessing: str = "legacy") -> dict:
+    mean, std = normalization(source, preprocessing)
+    views = {"image_size": image_size, "mean": list(mean), "std": list(std)}
+    if preprocessing != "legacy":
+        views["input_protocol"] = preprocessing
     return {"format_version": 1, "model_name": model_name, "classes": classes,
-            "preprocessing": {"image_size": image_size, "mean": list(mean), "std": list(std)}}
+            "preprocessing": views}
 
 
 def load_model_checkpoint(model, path: str | Path, expected: dict) -> dict:

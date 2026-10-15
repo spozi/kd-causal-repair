@@ -32,11 +32,16 @@ def preflight(plan):
     preflight does not download data or pretrained weights or write study outputs.
     """
     protocol, jobs = load_jobs(plan)
-    checked, failures = {}, []
+    checked, failures, seen, warnings = {}, [], set(), []
     for job, spec in jobs:
         source = spec.teacher.data.source
-        if source in checked:
+        contract = (source, spec.teacher.data.preprocessing, spec.teacher.data.image_size)
+        if contract in seen:
             continue
+        seen.add(contract)
+        disclosure = job.get("study_policy", {}).get("pretraining_overlap")
+        if disclosure and disclosure["imagenet_derived_dataset"]:
+            warnings.append({"dataset": source, **disclosure})
         try:
             data = build_data(replace(spec.teacher.data, download=False),
                               replace(spec.teacher.train, workers=0, device="cpu"),
@@ -44,15 +49,22 @@ def preflight(plan):
             image, label = data.train.dataset[0]
             if tuple(image.shape) != (3, spec.teacher.data.image_size, spec.teacher.data.image_size):
                 raise ValueError("Adapter returned a different input shape than its frozen model contract")
-            checked[source] = {"status": "ready", "split_sizes": data.provenance["split_sizes"],
+            outcome = {"status": "ready", "split_sizes": data.provenance["split_sizes"],
                                "train_per_class": data.provenance.get("train_per_class"),
                                "train_per_group": data.provenance.get("train_per_group"),
                                "input_shape": list(image.shape), "label": int(label)}
         except (ValueError, RuntimeError, OSError) as error:
-            checked[source] = {"status": "not_ready", "reason": str(error)}
-            failures.append(source)
+            outcome = {"status": "not_ready", "reason": str(error)}
+            if source not in failures:
+                failures.append(source)
+        outcome["preprocessing"] = spec.teacher.data.preprocessing
+        if source not in checked:
+            checked[source] = {**outcome, "input_contracts": []}
+        checked[source]["input_contracts"].append(outcome)
+        if outcome["status"] == "not_ready":
+            checked[source].update(status="not_ready", reason=outcome["reason"])
     return {"status": "ready" if not failures else "not_ready", "datasets": checked,
-            "failed_datasets": failures, "job_count": protocol["job_count"],
+            "failed_datasets": failures, "job_count": protocol["job_count"], "warnings": warnings,
             "weight_policy": "ImageNet weights are verified/retrieved by model initialization during explicit training, not preflight"}
 
 
@@ -155,6 +167,8 @@ def summarize(plan, output):
                    "validation_selected_recipe": None, "selected_kd": None,
                    "paired_repair_delta": None, "paired_selected_delta": None,
                    "recipe_coverage": {"completed": 0, "eligible": len(spec.recipes)}, "mechanism_coverage": None}
+            row["input_protocol"] = job.get("study_policy", {}).get("input_protocol")
+            row["pretraining_overlap"] = job.get("study_policy", {}).get("pretraining_overlap")
             if comparison is not None:
                 method_rows = method_reports[endpoint]
                 chosen = comparison["validation_selected_recipe"]
@@ -188,6 +202,10 @@ def summarize(plan, output):
             f"{display(row['control_kd'])} | {display(row['repaired_kd'])} | {row['validation_selected_recipe'] or '—'} | "
             f"{display(row['selected_kd'])} | {display(row['paired_selected_delta'])} | {coverage['completed']}/{coverage['eligible']} / {row['status']} |")
     lines.extend(["", result["aggregate_policy"], "Missing/invalid/unavailable outcomes are not zero gains.", ""])
+    flagged = sorted({row["dataset"] for row in rows if row["pretraining_overlap"] and row["pretraining_overlap"]["imagenet_derived_dataset"]})
+    if flagged:
+        lines.extend(["Pretraining-overlap warning: " + ", ".join(flagged)
+                      + " are ImageNet-derived; overlap with ImageNet-1K pretraining has not been audited. Do not present these endpoints as pretraining-disjoint.", ""])
     (target / "overview.md").write_text("\n".join(lines))
     return {"status": "reported", "endpoint_rows": len(rows), "output": str(target)}
 

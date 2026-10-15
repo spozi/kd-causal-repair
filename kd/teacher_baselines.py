@@ -19,7 +19,7 @@ from .checkpoints import (fingerprint, load_model_checkpoint, metadata,
                           save_checkpoint, tensor_state_fingerprint, write_json)
 from .config import (BenchmarkConfig, DataConfig, DistillationConfig, ExperimentConfig,
                      ModelConfig, TrainConfig, from_dict)
-from .data import _effective_factor, build_data
+from .data import _effective_factor, build_data, pretraining_overlap, transfer_input_policy
 from .engine import run_experiment
 from .evaluation import collect_predictions, prediction_metrics, save_prediction_report
 from .models import MODEL_NAMES, create_model
@@ -55,6 +55,9 @@ class TeacherBaselineSpec:
 
     def validate(self):
         self.teacher.validate()
+        if self.teacher.data.preprocessing in {"imagenet-transfer-v1", "imagenet-smallstem-v1"}:
+            if self.teacher.student.weights != "IMAGENET1K_V1" or self.student_weights != "IMAGENET1K_V1":
+                raise ValueError("Transfer baseline requires named ImageNet initialization for both teacher and student")
         from .shortcut_data import SHORTCUT_DATASETS
         shortcut = self.teacher.data.source in SHORTCUT_DATASETS
         if self.teacher.distillation.method != "supervised":
@@ -166,6 +169,16 @@ def study_configs(spec: TeacherBaselineSpec, output):
     return teachers, students, supervised
 
 
+def _transfer_settings(spec):
+    if spec.teacher.data.preprocessing not in {"imagenet-transfer-v1", "imagenet-smallstem-v1"}:
+        return {}
+    return {"input_protocol": transfer_input_policy(spec.teacher.data),
+            "initialization_policy": {"teacher": spec.teacher.student.weights,
+                                      "student": spec.student_weights, "heads": "new, seeded per role",
+                                      "stem_adaptation": "bilinear_l2_7to3_v1" if spec.teacher.data.preprocessing == "imagenet-smallstem-v1" else None},
+            "pretraining_overlap": pretraining_overlap(spec.teacher.data.source)}
+
+
 def plan_study(spec, output):
     verify_matrix_binding(spec, output)
     teachers, students, supervised = study_configs(spec, output)
@@ -179,6 +192,9 @@ def plan_study(spec, output):
         counts.update(teacher_training_fits=len(teachers) - len(spec.teacher_seeds),
                       repair_candidate_fits_max=repair_candidates,
                       total_fits=maximum, total_fits_max=maximum)
+    elif spec.teacher.data.preprocessing in {"imagenet-transfer-v1", "imagenet-smallstem-v1"}:
+        counts.update(teacher_training_fits=len(teachers), repair_candidate_fits_max=0,
+                      total_fits_max=counts["total_fits"])
     from .shortcut_data import SHORTCUT_DATASETS
     shortcut = spec.teacher.data.source in SHORTCUT_DATASETS
     if shortcut:
@@ -192,6 +208,7 @@ def plan_study(spec, output):
                                    for recipe, seed, config in students],
                   "supervised_student_runs": [config.to_dict() for config in supervised],
                   "counts": counts,
+                  **_transfer_settings(spec),
                   "teacher_augmentation_policies": {
                       name: randaugment_policy(spec.teacher.data.source)
                       for name in spec.recipes if name != REPAIR_NAME and RECIPES[name].randaugment},
@@ -247,7 +264,7 @@ def _check_student_summary(config, summary, *, require_bound_selection=False):
         best = load_selected_checkpoint(
             directory / "best.pt",
             metadata(config.student.name, last.get("classes", []),
-                     config.data.image_size, config.data.source),
+                     config.data.image_size, config.data.source, preprocessing=config.data.preprocessing),
             summary.get("data"), last)
     if (exported.get("epoch") != best["epoch"] or summary["best_epoch"] != best["epoch"] + 1
             or tensor_state_fingerprint(exported["student"]) != tensor_state_fingerprint(best["student"])):
@@ -360,7 +377,8 @@ def _validate_checkpoint(config, split="val", output=None, *, targets=None):
         raise ValueError("Evaluation data differs from the frozen training/validation provenance")
     model = create_model(config.student.name, config.data.num_classes)
     load_model_checkpoint(model, Path(config.output_dir) / config.name / "student.pt",
-                          metadata(config.student.name, data.classes, config.data.image_size, config.data.source))
+                          metadata(config.student.name, data.classes, config.data.image_size, config.data.source,
+                                   preprocessing=config.data.preprocessing))
     prepare_model(model, device, config.train.channels_last)
     labels, probabilities = collect_predictions(model, data.val if split == "val" else data.test,
                                                device, precision=config.train.precision,
@@ -438,6 +456,7 @@ def _report(spec, teachers, students, supervised, *, split, output=None):
             for seed in spec.teacher_seeds}
         rows.append(row)
     return {"split": split, "rows": rows, "supervised_student": supervised_metrics,
+            **_transfer_settings(spec),
             "target_classes": list(targets), "train_per_class": counts,
             "per_run": metrics, "synthetic_smoke_only": spec.teacher.data.source == "synthetic",
             "uncertainty_note": "Descriptive SD; crossed fits share teacher/student seeds. No significance claim."}
