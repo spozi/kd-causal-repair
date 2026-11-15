@@ -26,6 +26,7 @@ from .neuron_surgery_study import (
     _quality_report,
     _save_predictions,
     _training_provenance,
+    neuron_surgery_spec_from_dict,
     run_neuron_surgery_study,
 )
 
@@ -64,19 +65,8 @@ def _source_inputs(source: Path, seeds: tuple[int, ...]) -> dict:
     comparison = _read(study / "comparison.json")
     if comparison.get("status") != "complete" or not comparison.get("success", {}).get("passed"):
         raise ValueError("Source confirmatory study must be complete and successful")
-    source_spec = NeuronSurgerySpec(**{
-        **comparison["study"],
-        "student_seeds": tuple(comparison["study"]["student_seeds"]),
-        "target_classes": tuple(comparison["study"]["target_classes"]),
-        "stages": (tuple(comparison["study"]["stages"])
-                   if comparison["study"].get("stages") is not None else None),
-        "channel_budgets": tuple(comparison["study"]["channel_budgets"]),
-        "learning_rates": tuple(comparison["study"]["learning_rates"]),
-        "expected_train_counts": (tuple(comparison["study"]["expected_train_counts"])
-                                  if comparison["study"].get("expected_train_counts") is not None else None),
-        "expected_target_counts": (tuple(comparison["study"]["expected_target_counts"])
-                                   if comparison["study"].get("expected_target_counts") is not None else None),
-    })
+    source_spec = neuron_surgery_spec_from_dict(comparison["study"])
+    _require_legacy_budget(source_spec)
     if tuple(seeds) != source_spec.student_seeds:
         raise ValueError(f"Comparison requires source seeds {source_spec.student_seeds}")
     if (source_spec.student_model != "cifar_student" or source_spec.imbalance_factor != 100
@@ -117,7 +107,13 @@ def _source_inputs(source: Path, seeds: tuple[int, ...]) -> dict:
             "spec": source_spec, "rows": rows}
 
 
+def _require_legacy_budget(source: NeuronSurgerySpec) -> None:
+    if source.parameter_budget_fractions or source.max_preservation_kl is not None:
+        raise ValueError("Parameter-normalized repair and preservation KL constraints are not implemented for the direct-student comparison")
+
+
 def _direct_spec(source: NeuronSurgerySpec, seed: int, run_name: str) -> NeuronSurgerySpec:
+    _require_legacy_budget(source)
     return replace(
         source,
         name=f"student-surgery-f100-confirmatory-seed{seed}",
@@ -237,7 +233,7 @@ def run_student_surgery_study(
         "source_sha256": {
             name: fingerprint(Path(__file__).parent / name)
             for name in ("student_surgery_study.py", "neuron_surgery.py",
-                         "neuron_surgery_study.py", "engine.py", "data.py", "models.py",
+                         "neuron_surgery_study.py", "repair_budget.py", "engine.py", "data.py", "models.py",
                          "runtime.py")
         },
     }

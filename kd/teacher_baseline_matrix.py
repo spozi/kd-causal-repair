@@ -50,7 +50,7 @@ def _shortcut_job(dataset, *, root, device, precision, workers, epochs, teacher_
                         dataset_version=info["version"], dataset_profile="native-shortcut",
                         horizontal_flip=dataset == "urbancars"),
         student=ModelConfig(teacher_model, weights=weights), distillation=DistillationConfig(method="supervised"),
-        train=TrainConfig(epochs=epochs, batch_size=128 if small else 32,
+        train=TrainConfig(epochs=epochs, batch_size=128 if small or dataset == "multiceleba" else 32,
             learning_rate=0.05 if small else 0.001, momentum=0.9, weight_decay=0.0005,
             workers=workers, seed=teacher_seeds[0], device=device, precision=precision, threads=4,
             selection_metric="worst_group_accuracy"), benchmark=BenchmarkConfig(warmup=20, iterations=100))
@@ -98,7 +98,7 @@ def _spec_digest(value):
 
 def matrix_jobs(datasets=None, profiles=None, pairs=None, *, root="data", device="auto",
                 precision=DEFAULT_PRECISION, workers=0, epochs=DEFAULT_EPOCHS,
-                teacher_seeds=(41,), student_seeds=(42, 43, 44)):
+                teacher_seeds=(41,), student_seeds=(42, 43, 44), baseline_only=False):
     """Return validated dataset/profile/pair settings, without dataset access.
 
     Dataset sizes, flip policy and split identity come from the historical main
@@ -108,6 +108,8 @@ def matrix_jobs(datasets=None, profiles=None, pairs=None, *, root="data", device
     Planning itself does not resolve a device or require a CUDA installation.
     """
     datasets = _selection(DEFAULT_DATASETS if datasets is None else datasets, DATASETS, "datasets")
+    if not isinstance(baseline_only, bool):
+        raise ValueError("baseline_only must be a boolean")
     profiles = _selection(profiles, PROFILES, "profiles")
     pairs = _selection(DEFAULT_PAIRS if pairs is None else pairs, PAIRINGS, "pairs")
     root = _path(root, "root")
@@ -131,8 +133,13 @@ def matrix_jobs(datasets=None, profiles=None, pairs=None, *, root="data", device
     jobs = []
     for dataset in datasets:
         if dataset in SHORTCUT_DATASETS:
-            jobs.append(_shortcut_job(dataset, root=root, device=device, precision=precision,
-                workers=workers, epochs=epochs, teacher_seeds=teacher_seeds, student_seeds=student_seeds))
+            job = _shortcut_job(dataset, root=root, device=device, precision=precision,
+                workers=workers, epochs=epochs, teacher_seeds=teacher_seeds, student_seeds=student_seeds)
+            if baseline_only:
+                job["study"]["recipes"] = [name for name in job["study"]["recipes"] if name != REPAIR_NAME]
+                job["study"]["repair"] = None
+                job["study"]["group_policy"]["mechanism_controls"] = False
+            jobs.append(job)
             continue
         for profile in profiles:
             for pair in pairs:
@@ -160,11 +167,11 @@ def matrix_jobs(datasets=None, profiles=None, pairs=None, *, root="data", device
                     recipes = tuple(recipe for recipe in recipes if recipe != "balanced_softmax")
                 spec = TeacherBaselineSpec(
                     teacher=teacher, student_model=models["student"], student_weights=weights, teacher_seeds=teacher_seeds,
-                    student_seeds=student_seeds, recipes=(*recipes, REPAIR_NAME),
+                    student_seeds=student_seeds, recipes=recipes if baseline_only else (*recipes, REPAIR_NAME),
                     teacher_selection_metric="accuracy",
                     student_selection_metric="accuracy" if profile == "balanced" else "balanced_accuracy",
-                    repair=TeacherRepairOptions(allow_sparse_class_fallback=True,
-                                                repair_batch_size=64))
+                    repair=None if baseline_only else TeacherRepairOptions(allow_sparse_class_fallback=True,
+                                                                           repair_batch_size=64))
                 spec.validate()
                 jobs.append({"id": f"{dataset}-{profile}-{pair}", "dataset": dataset,
                              "version": DATASETS[dataset]["version"], "profile": profile,
@@ -216,6 +223,12 @@ def plan_matrix(output, datasets=None, profiles=None, pairs=None, *, run_root=No
             raise ValueError("Source files changed while planning the matrix; retry with stable code")
         sources = plan["source_sha256"]
         counts = plan["counts"]
+        if settings.get("baseline_only", False):
+            # Compact standalone plans retain their historical count schema.
+            # Matrix queues need explicit zero-repair/max-fit fields as well.
+            counts = {"teacher_training_fits": counts["teachers"],
+                      "repair_candidate_fits_max": 0,
+                      "total_fits_max": counts["total_fits"], **counts}
         excluded = {"version", "purpose", "spec", "output", "teacher_runs", "student_runs",
                     "supervised_student_runs", "counts", "counts_note", "source_sha256"}
         job.update(config=str(output / "configs" / f"{job['id']}.json"),
@@ -242,7 +255,7 @@ def plan_matrix(output, datasets=None, profiles=None, pairs=None, *, run_root=No
                   "epoch_policy": {"teacher_student_epochs": settings.get("epochs", DEFAULT_EPOCHS),
                                    "scope": "uniform across all selected datasets, profiles and architecture pairs",
                                    "historical_profile_epochs_unchanged": True,
-                                   "repair_epochs": TeacherRepairOptions().repair_epochs},
+                                   "repair_epochs": None if settings.get("baseline_only", False) else TeacherRepairOptions().repair_epochs},
                   "source_sha256": sources, "jobs": jobs})
     parent_digest = matrix_payload_digest(protocol)
     for job in protocol["jobs"]:
@@ -339,12 +352,14 @@ def main(argv=None):
     parser.add_argument("--teacher-seeds", type=int, nargs="+", default=(41,))
     parser.add_argument("--student-seeds", type=int, nargs="+", default=(42, 43, 44))
     parser.add_argument("--dry-run", action="store_true", help="Print protocol; no writes, downloads, or training")
+    parser.add_argument("--baseline-only", action="store_true",
+                        help="Exclude repair arms and mechanism controls before freezing the matrix plan")
     args = parser.parse_args(argv)
     report = materialize_matrix_plan(
         args.output, args.datasets, args.profiles, args.pairs, dry_run=args.dry_run,
         run_root=args.run_root, root=args.root, device=args.device, precision=args.precision,
         workers=args.workers, epochs=args.epochs,
-        teacher_seeds=args.teacher_seeds, student_seeds=args.student_seeds)
+        teacher_seeds=args.teacher_seeds, student_seeds=args.student_seeds, baseline_only=args.baseline_only)
     print(json.dumps(report, indent=2, allow_nan=False))
 
 

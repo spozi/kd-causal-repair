@@ -1,4 +1,5 @@
 from contextlib import redirect_stdout
+from dataclasses import replace
 import io
 from pathlib import Path
 import tempfile
@@ -6,13 +7,33 @@ import unittest
 from unittest.mock import patch
 
 from kd.cli import main as cli_main
+from kd.checkpoints import write_json
 from kd.config import (DataConfig, DistillationConfig, ExperimentConfig, ModelConfig,
                        TrainConfig)
 from kd.neuron_surgery_study import NeuronSurgerySpec
-from kd.student_surgery_study import _direct_spec, _supervised_config
+from kd.student_surgery_study import _direct_spec, _source_inputs, _supervised_config
 
 
 class StudentSurgeryConfigurationTests(unittest.TestCase):
+    def test_new_teacher_budget_constraints_are_not_silently_reused_for_student_surgery(self):
+        source = NeuronSurgerySpec(student_seeds=(142,), confirmation_fraction=0.1,
+                                   evaluation_split="confirmation")
+        for changed in (replace(source, parameter_budget_fractions=(0.008,),
+                                max_preservation_kl=0.02),
+                        replace(source, max_preservation_kl=0.02)):
+            with self.subTest(spec=changed), self.assertRaisesRegex(
+                    ValueError, "not implemented for the direct-student comparison"):
+                _direct_spec(changed, 142, "supervised_seed142")
+            with tempfile.TemporaryDirectory() as root:
+                directory = Path(root)
+                (directory / "studies" / "confirmatory").mkdir(parents=True)
+                write_json(directory / "progress.json", {"phase": "complete"})
+                write_json(directory / "studies" / "confirmatory" / "comparison.json",
+                           {"status": "complete", "success": {"passed": True},
+                            "study": changed.to_dict()})
+                with self.assertRaisesRegex(ValueError, "not implemented for the direct-student comparison"):
+                    _source_inputs(directory, (142,))
+
     def test_direct_spec_disables_all_distillation(self):
         source = NeuronSurgerySpec(
             name="source", teacher_run="teacher", student_run_template="kd_seed{seed}",

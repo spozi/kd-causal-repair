@@ -17,6 +17,7 @@ from .checkpoints import fingerprint, write_json
 from .models import canonical_model_name
 from .neuron_surgery_study import (NeuronSurgerySpec, resolve_target_classes,
                                    run_neuron_surgery_study)
+from .repair_budget import validate_budget_options
 
 
 REPAIR_NAME = "teacher_repair"
@@ -27,6 +28,9 @@ REPAIR_FILES = ("teacher_protocol.json", "config.json", "student.pt", "summary.j
 @dataclass(frozen=True)
 class TeacherRepairOptions:
     channel_budgets: tuple[int, ...] = (2, 4, 8)
+    parameter_budget_fractions: tuple[float, ...] = ()
+    max_preservation_kl: float | None = None
+    screening_policy: str = "strict"
     learning_rates: tuple[float, ...] = (0.001, 0.005)
     repair_epochs: int = 20
     repair_samples_per_epoch: int = 640
@@ -36,6 +40,11 @@ class TeacherRepairOptions:
     allow_sparse_class_fallback: bool = False
 
     def validate(self):
+        validate_budget_options(self.parameter_budget_fractions, self.max_preservation_kl)
+        if self.screening_policy not in ("strict", "screened_then_ranked"):
+            raise ValueError("repair.screening_policy must be strict or screened_then_ranked")
+        if self.screening_policy != "strict" and not self.parameter_budget_fractions:
+            raise ValueError("Expanded screening requires parameter-normalized repair budgets")
         for name in ("repair_epochs", "repair_samples_per_epoch", "repair_batch_size", "companion_count"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
@@ -52,10 +61,21 @@ class TeacherRepairOptions:
                 or not isinstance(self.allow_sparse_class_fallback, bool)):
             raise ValueError("Invalid repair target fraction or sparse-class policy")
 
+    def to_dict(self):
+        """Keep historical fixed-channel configuration identities unchanged."""
+        result = asdict(self)
+        if not self.parameter_budget_fractions:
+            result.pop("parameter_budget_fractions")
+        if self.max_preservation_kl is None:
+            result.pop("max_preservation_kl")
+        if self.screening_policy == "strict":
+            result.pop("screening_policy")
+        return result
+
 
 def repair_options(raw):
     raw = dict(raw)
-    for name in ("channel_budgets", "learning_rates"):
+    for name in ("channel_budgets", "parameter_budget_fractions", "learning_rates"):
         if name in raw:
             raw[name] = tuple(raw[name])
     result = TeacherRepairOptions(**raw)

@@ -183,7 +183,7 @@ def train_shortcut_repair(spec, condition, config):
     verify_manifest(control, "completion.json", TEACHER_FILES)
     base_summary = read_json(control / "summary.json")
     identity = {"version": 1, "condition": condition, "config": config.to_dict(),
-                "group_policy": spec.group_policy, "repair_options": spec.repair.__dict__,
+                "group_policy": spec.group_policy, "repair_options": spec.repair.to_dict(),
                 "base_teacher_sha256": fingerprint(control / "student.pt"),
                 "base_completion_sha256": fingerprint(control / "completion.json"),
                 "source_sha256": {name: fingerprint(Path(__file__).parent / name) for name in STUDY_SOURCE_FILES}}

@@ -27,6 +27,9 @@ from .engine import resolve_device, run_experiment, seed_everything
 from .evaluation import (collect_predictions, paired_calibration_comparison,
                          paired_comparison, prediction_metrics)
 from .models import VisionModel, canonical_model_name, create_model
+from .repair_budget import (plan_parameter_budgets, preservation_metrics,
+                            validate_budget_options)
+from .repair_screening import build_screening_pool
 from .neuron_surgery import (FORMAT_VERSION, TAIL_CLASSES, build_companion_records,
                              causal_channel_validation, collect_teacher_diagnostics,
                              consensus_channel_ranking, differential_channel_scores,
@@ -61,7 +64,7 @@ COMPUTE_SOURCES = (
     "losses.py", "calibration.py", "adaptive_focal.py", "cpc.py", "models.py",
     "runtime.py", "metrics.py", "evaluation.py", "calibration_metrics.py",
     "neuron_surgery.py", "neuron_surgery_study.py", "repair_failure.py",
-    "shortcut_data.py", "group_metrics.py",
+    "shortcut_data.py", "group_metrics.py", "repair_budget.py", "repair_screening.py",
 )
 
 
@@ -92,6 +95,8 @@ class NeuronSurgerySpec:
     feature_weight: float = 0.25
     preservation_ce_weight: float = 0.0
     channel_budgets: tuple[int, ...] = CHANNEL_BUDGETS
+    parameter_budget_fractions: tuple[float, ...] = ()
+    max_preservation_kl: float | None = None
     learning_rates: tuple[float, ...] = LEARNING_RATES
     repair_epochs: int = 20
     repair_samples_per_epoch: int = 640
@@ -107,6 +112,7 @@ class NeuronSurgerySpec:
     dataset_profile: str | None = None
     allow_sparse_class_fallback: bool = False
     channel_selection: str = "screened"
+    screening_policy: str = "strict"
     channel_selection_seed: int = 2026
     hard_source: str = "train"
     dataset_preprocessing: str = "legacy"
@@ -146,6 +152,15 @@ class NeuronSurgerySpec:
         if (not self.channel_budgets or any(value < 1 for value in self.channel_budgets)
                 or tuple(sorted(set(self.channel_budgets))) != self.channel_budgets):
             raise ValueError("Study channel budgets must be unique increasing positive integers")
+        validate_budget_options(self.parameter_budget_fractions, self.max_preservation_kl)
+        if (not isinstance(self.screening_policy, str)
+                or self.screening_policy not in {"strict", "screened_then_ranked"}):
+            raise ValueError("Unknown screening_policy; expected strict or screened_then_ranked")
+        if self.screening_policy != "strict" and not self.parameter_budget_fractions:
+            raise ValueError("Expanded screening requires parameter-normalized budgets and an explicit KL ceiling")
+        if self.parameter_budget_fractions and (
+                self.channel_selection != "screened" or not self.causal_validation):
+            raise ValueError("Parameter-normalized repair requires causally screened channel selection")
         if not self.learning_rates or any(value <= 0 for value in self.learning_rates):
             raise ValueError("Study learning rates must be positive")
         if self.target_class_policy not in {"explicit", "frequency_tail", "all"}:
@@ -186,7 +201,9 @@ class NeuronSurgerySpec:
         value = asdict(self)
         # Preserve historical JSON identities for the default compact protocol.
         for name, default in (("dataset_preprocessing", "legacy"),
-                              ("localization_batch_size", 16), ("screening_batch_size", 128)):
+                              ("localization_batch_size", 16), ("screening_batch_size", 128),
+                              ("parameter_budget_fractions", ()), ("max_preservation_kl", None),
+                              ("screening_policy", "strict")):
             if value[name] == default:
                 value.pop(name)
         return value
@@ -195,7 +212,7 @@ class NeuronSurgerySpec:
 def neuron_surgery_spec_from_dict(raw: dict) -> NeuronSurgerySpec:
     values = dict(raw)
     for name in ("student_seeds", "target_classes", "stages", "channel_budgets",
-                 "learning_rates", "expected_train_counts", "expected_target_counts"):
+                 "parameter_budget_fractions", "learning_rates", "expected_train_counts", "expected_target_counts"):
         if values.get(name) is not None:
             values[name] = tuple(values[name])
     spec = NeuronSurgerySpec(**values)
@@ -389,7 +406,9 @@ def _load_inputs(baseline: str | Path, seeds: tuple[int, ...],
                   config.train.seed, config.surgery.action)
         expected = (teacher_config.data, spec.student_model, spec.teacher_model,
                     "kd", 4.0, 0.5, 5, 0.0, spec.training_epochs,
-                    128, 0.05, 0.9, 0.0005, seed, "none")
+                    128, (0.001 if teacher_config.data.preprocessing in {
+                        "imagenet-transfer-v1", "imagenet-smallstem-v1"} else 0.05),
+                    0.9, 0.0005, seed, "none")
         if (recipe != expected or config.student.checkpoint is not None
                 or config.name != run_name):
             raise ValueError(f"Seed {seed} baseline differs from the predeclared KD recipe")
@@ -467,7 +486,7 @@ def _protocol(baseline: Path, output: Path, device: str, teacher_config,
               teacher_checkpoint: Path, students: dict, spec: NeuronSurgerySpec) -> dict:
     source_root = Path(__file__).parent
     stages = _configured_stages(spec)
-    return _json({
+    protocol = _json({
         "version": STUDY_VERSION,
         "method": ("AI-Lancet-inspired same-class companion channel repair followed by KD"
                    if spec.downstream_kd else
@@ -533,6 +552,36 @@ def _protocol(baseline: Path, output: Path, device: str, teacher_config,
                               "Official test data are constructed only after teacher selection is persisted; evidence is exploratory because prior workspace studies examined test."),
         "source_sha256": {name: fingerprint(source_root / name) for name in COMPUTE_SOURCES},
     })
+    if spec.parameter_budget_fractions:
+        protocol["repair"].update({
+            "budget_mode": "parameter_fraction",
+            "parameter_budget_fractions": list(spec.parameter_budget_fractions),
+            "channel_budgets": None,
+            "budget_policy": "longest screened prefix within unique-parameter cap; deduplicate supports; no unscreened fill",
+        })
+        protocol["teacher_selection"]["tie_breaks"] = [
+            "target_balanced_nll", "fewer_editable_coordinates", "lower_learning_rate"]
+    if spec.screening_policy != "strict":
+        protocol["method"] = "Screened-first expanded-support channel repair" + (
+            " followed by KD" if spec.downstream_kd else f" of {spec.repair_subject}")
+        protocol["localization"].update({
+            "screening_policy": spec.screening_policy,
+            "fallback_ranking": "remaining localized channels by descending consensus_score, stage, channel",
+            "causal_screening_role": "strict-prefix prioritization; fallback channels need not pass ablation",
+        })
+        protocol["repair"]["budget_policy"] = (
+            "longest screened-first expanded prefix within unique-parameter cap; deduplicate supports; "
+            "fallback uses only configured localized stages")
+    if spec.max_preservation_kl is not None:
+        protocol["teacher_selection"]["preservation_constraint"] = {
+            "metric": "mean_forward_kl", "direction": "original||candidate",
+            "temperature": 1.0, "units": "nats_per_image",
+            "split": protocol["teacher_selection"]["split"],
+            "population": "all selection-validation images, including target classes",
+            "maximum": spec.max_preservation_kl,
+            "enforcement": "hard candidate acceptance gate, not an optimizer trust-region guarantee",
+        }
+    return protocol
 
 
 def _records_from_arrays(arrays: dict[str, np.ndarray]) -> list[dict]:
@@ -565,11 +614,41 @@ def _tail_metrics(labels, probabilities, target_classes=TAIL_CLASSES) -> dict:
 
 def _validation_report(model, loader, device, classes,
                        target_classes=TAIL_CLASSES, *, precision="float32",
-                       channels_last=False) -> dict:
+                       channels_last=False, preservation_reference=None) -> dict:
     labels, probability = collect_predictions(
         model, loader, device, precision=precision, channels_last=channels_last)
-    return {**prediction_metrics(labels, probability, classes),
-            **_tail_metrics(labels, probability, target_classes)}
+    result = {**prediction_metrics(labels, probability, classes),
+              **_tail_metrics(labels, probability, target_classes)}
+    if preservation_reference is not None:
+        reference_labels, reference_probabilities = preservation_reference
+        if not np.array_equal(labels, reference_labels):
+            raise ValueError("Preservation validation image order/labels differ from the anchor")
+        result["preservation"] = preservation_metrics(labels, reference_probabilities, probability)
+    return result
+
+
+def _candidate_constraints(row, baseline_validation, max_preservation_kl=None):
+    """Independent empirical gates; KL is measured only on held-out selection data."""
+    validation = row["validation"]
+    gates = {
+        "accuracy_guard_pass": validation["accuracy"] >= baseline_validation["accuracy"] - 0.005,
+        "target_recall_guard_pass": validation["target_macro_recall"] > baseline_validation["target_macro_recall"],
+    }
+    if max_preservation_kl is not None:
+        # Missing/nonfinite KL must fail closed, including for cached candidate artifacts.
+        kl = validation.get("preservation", {}).get("mean_forward_kl", float("nan"))
+        gates["preservation_kl_guard_pass"] = bool(np.isfinite(kl) and 0 <= kl <= max_preservation_kl)
+    return {**gates, "accepted": all(gates.values())}
+
+
+def _eligible_candidates(candidates, baseline_validation, spec):
+    eligible = [row for row in candidates
+                if _candidate_constraints(row, baseline_validation, spec.max_preservation_kl)["accepted"]]
+    eligible.sort(key=lambda row: (
+        -row["validation"]["target_macro_recall"], row["validation"]["target_balanced_nll"],
+        row["parameter_budget"]["editable_coordinates"] if spec.parameter_budget_fractions else row["budget"],
+        row["learning_rate"]))
+    return eligible
 
 
 def _candidate_complete(path: Path, identity: dict):
@@ -589,7 +668,8 @@ def _train_candidate(directory: Path, identity: dict, teacher_config, teacher_ch
                      anchor: VisionModel, dataset, labels, target_indices, preservation_indices,
                      channels, device, classes, validation_loader, localization_sha256,
                      budget: int, learning_rate: float, spec: NeuronSurgerySpec,
-                     target_classes: tuple[int, ...]) -> dict:
+                     target_classes: tuple[int, ...], *, preservation_reference=None,
+                     parameter_budget=None, screening_support=None) -> dict:
     cached = _candidate_complete(directory, identity)
     if cached is not None:
         state = torch.load(directory / "teacher.pt", map_location="cpu", weights_only=True)
@@ -617,10 +697,15 @@ def _train_candidate(directory: Path, identity: dict, teacher_config, teacher_ch
             "base_checkpoint": str(teacher_checkpoint),
             "base_checkpoint_sha256": fingerprint(teacher_checkpoint),
             "localization_sha256": localization_sha256})
+    validation_kwargs = ({"preservation_reference": preservation_reference}
+                         if preservation_reference is not None else {})
     validation = _validation_report(
         candidate, validation_loader, device, classes, target_classes,
         precision=teacher_config.train.precision,
-        channels_last=teacher_config.train.channels_last)
+        channels_last=teacher_config.train.channels_last, **validation_kwargs)
+    if parameter_budget is not None:
+        if verification["selected_parameter_coordinates"] != parameter_budget["editable_coordinates"]:
+            raise ValueError("Candidate editable coordinates differ from the frozen parameter budget")
     checkpoint = {**metadata(spec.teacher_model, classes, teacher_config.data.image_size,
                              teacher_config.data.source, preprocessing=teacher_config.data.preprocessing), "kind": "inference",
                   "epoch": spec.repair_epochs - 1, "student": candidate.cpu().state_dict(),
@@ -637,11 +722,22 @@ def _train_candidate(directory: Path, identity: dict, teacher_config, teacher_ch
                              "feature_weight": spec.feature_weight,
                              "preservation_ce_weight": spec.preservation_ce_weight,
                              "validation": validation, "verification": verification}}
+    if parameter_budget is not None:
+        checkpoint["repair"]["parameter_budget"] = parameter_budget
+    if screening_support is not None:
+        checkpoint["repair"].update(screening_policy=spec.screening_policy,
+                                     screening_support=screening_support)
+    if spec.max_preservation_kl is not None:
+        checkpoint["repair"]["max_preservation_kl"] = spec.max_preservation_kl
     save_checkpoint(directory / "teacher.pt", checkpoint)
     result = {"budget": budget, "learning_rate": learning_rate, "channels": channels,
               "validation": validation, "verification": verification,
               "checkpoint": str(directory / "teacher.pt"),
               "checkpoint_sha256": fingerprint(directory / "teacher.pt")}
+    if parameter_budget is not None:
+        result["parameter_budget"] = parameter_budget
+    if screening_support is not None:
+        result.update(screening_policy=spec.screening_policy, screening_support=screening_support)
     write_json(directory / "history.json", history)
     write_json(directory / "result.json", result)
     write_json(directory / "completion.json", {"identity": _json(identity),
@@ -727,19 +823,35 @@ def _mean_std(values):
 def _render_report(comparison: dict) -> str:
     dataset = comparison.get("study", {}).get("dataset_source", "cifar10")
     title = f"# {dataset} neuron surgery and KD"
+    policy = comparison.get("study", {}).get("screening_policy", comparison.get(
+        "screening_policy", comparison.get("teacher_selection", {}).get("screening_policy", "strict")))
+    screening_note = ""
+    if policy != "strict":
+        screening_note = ("Screening policy: **screened_then_ranked** (expanded support, not strict causal screening). "
+                          "Passing channels are prioritized; remaining localized channels may be edited without "
+                          "passing ablation. Final acceptance gates and student KD remain unchanged.\n\n")
+        selected = comparison.get("teacher_selection", {}).get("selected")
+        if selected:
+            support = selected["screening_support"]
+            parameter_budget = selected["parameter_budget"]
+            screening_note += (
+                f"Selected support: **{100 * parameter_budget['achieved_fraction']:.4f}%** of teacher parameters; "
+                f"{support['strict_channels']} strict and {support['fallback_channels']} fallback channels.\n\n")
     if comparison["status"] in {"repair_only_complete", "student_repair_complete"}:
         delta = comparison["validation_delta"]
         return (f"# {dataset} neuron-surgery component ablation\n\n"
                 f"Study: **{comparison['study']['name']}**.\n\n"
-                f"Validation accuracy delta: **{delta['accuracy']:+.4f}**.  \n"
+                + screening_note
+                + f"Validation accuracy delta: **{delta['accuracy']:+.4f}**.  \n"
                 f"Validation target-recall delta: **{delta['target_macro_recall']:+.4f}**.  \n"
                 f"Validation target-NLL delta: **{delta['target_balanced_nll']:+.4f}**.\n")
     if comparison["status"] != "complete":
         return (title + "\n\n"
-                f"Status: **{comparison['status']}**.\n\n"
+                + screening_note
+                + f"Status: **{comparison['status']}**.\n\n"
                 f"{comparison['reason']}\n")
     aggregate = comparison["aggregate"]
-    lines = [title, "",
+    lines = [title, "", *([screening_note.rstrip(), ""] if screening_note else []),
              f"Study: **{comparison['study']['name']}**.", "",
              ("AI-Lancet-inspired channel repair was selected on the development split "
               f"before the {comparison['evaluation_split']} split was loaded."), "",
@@ -775,9 +887,12 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
     protocol = _protocol(baseline, directory, device, teacher_config, teacher_checkpoint,
                          students, spec)
     if dry_run:
-        return {"dry_run": True, "output": str(directory), "protocol": protocol,
+        plan = {"dry_run": True, "output": str(directory), "protocol": protocol,
                 "student_run_count": len(seeds) if spec.downstream_kd else 0,
-                "repair_candidate_count": len(spec.channel_budgets) * len(spec.learning_rates)}
+                "repair_candidate_count": len(spec.parameter_budget_fractions or spec.channel_budgets) * len(spec.learning_rates)}
+        if spec.parameter_budget_fractions:
+            plan["repair_candidate_count_is_upper_bound"] = True
+        return plan
     resolved_device = resolve_device(device)
     deterministic = teacher_config.train.cuda_mode == "deterministic"
     seed_everything(REPAIR_SEED, deterministic=deterministic)
@@ -963,6 +1078,36 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
 
     def localization_compute():
         ranking = causal["ranking"]
+        screening = None
+        if spec.screening_policy != "strict":
+            screening = build_screening_pool(
+                consensus, causal, policy=spec.screening_policy,
+                allowed_channels={stage: teacher.feature_channels[stage] for stage in stages})
+            ranking = screening["ranking"]
+        if spec.parameter_budget_fractions:
+            plan = plan_parameter_budgets(teacher, ranking, spec.parameter_budget_fractions)
+            payload = {"format_version": FORMAT_VERSION, "ranking": ranking,
+                    "channel_selection": spec.channel_selection,
+                    "budget_mode": "parameter_fraction", "parameter_budget_plan": plan,
+                    "available_channel_budgets": [row["budget"] for row in plan["candidates"]],
+                    "candidate_channels": {str(row["budget"]): row["channels"] for row in plan["candidates"]},
+                    "candidate_parameter_budgets": {str(row["budget"]): row["parameter_budget"]
+                                                    for row in plan["candidates"]}}
+            if screening is not None:
+                diagnostics = {(row["stage"], row["channel"]): row for row in screening["channels"]}
+                supports = {}
+                for row in plan["candidates"]:
+                    selected = [diagnostics[(channel["stage"], channel["channel"])]
+                                for channel in row["channels"]]
+                    strict_count = sum(channel["selection_source"] == "strict" for channel in selected)
+                    supports[str(row["budget"])] = {
+                        "pool_sha256": screening["pool_sha256"],
+                        "support_sha256": row["parameter_budget"]["support_sha256"],
+                        "strict_channels": strict_count, "fallback_channels": len(selected) - strict_count,
+                        "channels": selected}
+                payload.update(screening_policy=spec.screening_policy, screening_pool=screening,
+                               candidate_screening_supports=supports)
+            return payload
         pool = [{"stage": row["stage"], "channel": row["channel"]}
                 for row in consensus["channels"]]
         # Budgets stay keyed to the screened ranking so every selection mode covers the
@@ -982,11 +1127,24 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
     localization = _stage_json(directory / "localization.json", localization_identity,
                                localization_compute)
     localization_sha256 = fingerprint(directory / "localization.json")
+    screening_summary = None
+    if spec.screening_policy != "strict":
+        pool = localization["screening_pool"]
+        screening_summary = {"screening_policy": spec.screening_policy,
+                             "pool_sha256": pool["pool_sha256"],
+                             "strict_ranked_channels": pool["strict_ranked_channels"],
+                             "ranked_channels": pool["ranked_channels"], "counts": pool["counts"]}
     if not localization["available_channel_budgets"]:
         comparison = {"status": "no_repair_selected",
-                      "reason": "Too few channels passed the configured localization guardrails.",
+                      "reason": ("No expanded channel prefix fits the parameter caps."
+                                 if screening_summary is not None else
+                                 "No screened channel prefix fits the parameter caps."
+                                 if spec.parameter_budget_fractions else
+                                 "Too few channels passed the configured localization guardrails."),
                       "protocol_sha256": protocol_sha256,
                       "target_classes": list(target_classes)}
+        if screening_summary is not None:
+            comparison.update(screening_summary)
         write_json(directory / "comparison.json", comparison)
         _freeze_text(directory / "report.md", _render_report(comparison))
         _write_report_manifest(directory, protocol_sha256,
@@ -1001,6 +1159,11 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
         target_classes, precision=teacher_config.train.precision,
         channels_last=teacher_config.train.channels_last)
     _freeze(directory / "teacher_validation_baseline.json", original_validation)
+    preservation_reference = None
+    if spec.max_preservation_kl is not None:
+        preservation_reference = collect_predictions(
+            teacher, selection_loader, resolved_device, precision=teacher_config.train.precision,
+            channels_last=teacher_config.train.channels_last)
     augmented_data = build_data(teacher_config.data,
                                 replace(teacher_config.train, seed=REPAIR_SEED, workers=0, device=device),
                                 include_test=False, diagnostic=False)
@@ -1019,37 +1182,53 @@ def run_neuron_surgery_study(baseline="runs/cifar10-lt-multiseed",
     candidates = []
     for budget in localization["available_channel_budgets"]:
         channels = localization["candidate_channels"][str(budget)]
+        parameter_budget = localization.get("candidate_parameter_budgets", {}).get(str(budget))
+        screening_support = localization.get("candidate_screening_supports", {}).get(str(budget))
         for learning_rate in spec.learning_rates:
             name = f"budget{budget}_lr{learning_rate:g}"
             identity = {"protocol_sha256": protocol_sha256,
                         "localization_sha256": localization_sha256,
                         "teacher_sha256": fingerprint(teacher_checkpoint),
                         "budget": budget, "learning_rate": learning_rate, "channels": channels}
+            candidate_kwargs = {}
+            if parameter_budget is not None:
+                identity["parameter_budget"] = parameter_budget
+                candidate_kwargs["parameter_budget"] = parameter_budget
+            if screening_support is not None:
+                identity.update(screening_policy=spec.screening_policy, screening_support=screening_support)
+                candidate_kwargs["screening_support"] = screening_support
+            if preservation_reference is not None:
+                candidate_kwargs["preservation_reference"] = preservation_reference
             result = _train_candidate(
                 directory / "repair_candidates" / name, identity, teacher_config,
                 teacher_checkpoint, teacher, repair_training_pool, labels,
                 [row["index"] for row in target_plan["targets"]],
                 target_plan["training_preservation_indices"], channels, resolved_device,
                 diagnostic_data.classes, selection_loader, localization_sha256,
-                budget, learning_rate, spec, target_classes)
+                budget, learning_rate, spec, target_classes, **candidate_kwargs)
             candidates.append(result)
             write_json(directory / "progress.json", {"phase": "teacher_repair",
                                                        "completed": [row["checkpoint"] for row in candidates]})
     _freeze(directory / "candidate_results.json", candidates)
-    eligible = [row for row in candidates
-                if row["validation"]["accuracy"] >= original_validation["accuracy"] - 0.005
-                and row["validation"]["target_macro_recall"] > original_validation["target_macro_recall"]]
-    eligible.sort(key=lambda row: (-row["validation"]["target_macro_recall"],
-                                   row["validation"]["target_balanced_nll"], row["budget"],
-                                   row["learning_rate"]))
+    eligible = _eligible_candidates(candidates, original_validation, spec)
     selection = {"protocol_sha256": protocol_sha256, "localization_sha256": localization_sha256,
                  "baseline_validation": original_validation,
                  "eligible_count": len(eligible), "selected": eligible[0] if eligible else None,
                  "selection_frozen_before_evaluation": True}
+    if screening_summary is not None:
+        selection.update(screening_summary)
+    if spec.max_preservation_kl is not None:
+        selection["preservation_constraint"] = protocol["teacher_selection"]["preservation_constraint"]
+        selection["candidate_constraints"] = [
+            {"checkpoint": row["checkpoint"],
+             **_candidate_constraints(row, original_validation, spec.max_preservation_kl)}
+            for row in candidates]
     _freeze(directory / "teacher_selection.json", selection)
     if not eligible:
         comparison = {"status": "no_repair_selected",
-                      "reason": "No repaired teacher strictly improved validation target recall within the 0.5-point accuracy guardrail.",
+                      "reason": ("No repaired teacher passed target-recall, accuracy, and held-out preservation-KL constraints."
+                                 if spec.max_preservation_kl is not None else
+                                 "No repaired teacher strictly improved validation target recall within the 0.5-point accuracy guardrail."),
                       "protocol_sha256": protocol_sha256,
                       "target_classes": list(target_classes),
                       "teacher_selection": selection}

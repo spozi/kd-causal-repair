@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "name": "flexible-screening-pilot-20261026",
+  "remote_root": "/home/ubuntu/kd-flexible-screening-pilot-20261026",
+  "device": "cuda:0",
+  "disk_free_minimum_gib": 12,
+  "cases": [
+    {
+      "id": "stl10-balanced",
+      "template": "configs/stl10_expanded_repair.json",
+      "baseline": "/home/ubuntu/kd-stl10-20261021/studies/stl10-balanced/models",
+      "expected_model_sha256": {
+        "teacher_control_seed41": "bda8d4711035502e3b8a0dbc2966b49e641a4b31b5a9caf07baf36a5e30ae565",
+        "kd_control_teacher41_seed42": "caf9cfd91d3abc7677b524ee7c15c9d3c8c23ad43025bc3f3c31be181537b63c",
+        "kd_control_teacher41_seed43": "c6426ce85890a08808e8dda32b36f53a31a77f67ac04a58f3391f72068253718",
+        "kd_control_teacher41_seed44": "0ad6535efc9dc9df973365513e644d3cedacc697e9525738a143222f3e68182b"
+      },
+      "expected_data": {
+        "source": "stl10",
+        "dataset_version": "1.0",
+        "dataset_profile": "balanced",
+        "train_index_sha256": "2e94625b3e5fc971b31f2e4be765bff06cd154a436b347ca3a945d0669d39dac",
+        "val_index_sha256": "c26110c150b085fe39266c332a876bb363f450fbb7172198c46eeb195ba3785a",
+        "recipe_sha256": "a73ff4cd5ac62fb191163f522b6b08a143f7b8da4ddaef4a711f0758e54e4418",
+        "artifact_sha256": {"binary": "f31fd99273a1acb8609c8db427cebb1de3f71de77758cdc0e22956e1289b9866"}
+      }
+    },
+    {
+      "id": "cifar100-lt-if50",
+      "template": "configs/cifar100_lt50_expanded_repair.json",
+      "baseline": "/home/ubuntu/kd-cifar100-lt/studies/cifar100-lt-if50/models",
+      "expected_model_sha256": {
+        "teacher_control_seed41": "21fb0d054d1b6818fb0c97610a24940d38b2e87fc8a290b3c3909eab959af412",
+        "kd_control_teacher41_seed42": "fae6cd95ca2e043a26b8249cc48c9c8a3aee86b9f5d32793558f92ebe4b3239e",
+        "kd_control_teacher41_seed43": "36e97814e9b82747b408fdf9e51be8e484d3136a96bdb51cc7afbd1458cd79c2",
+        "kd_control_teacher41_seed44": "4472e2b9d1b689a9eed5391fcd37263a28789970253240df108c8f84ad517a7e"
+      },
+      "expected_data": {
+        "source": "cifar100",
+        "dataset_version": "1.0",
+        "dataset_profile": "lt-if50",
+        "train_index_sha256": "d5e1d74a17d81942309c964260be1999d38d05242394735a518f770a9b699975",
+        "val_index_sha256": "5a33e153e7b4a58c8766b701e4b44f646ff52f40961e2a7dab7419eea9e6515c",
+        "recipe_sha256": "e8c903a8782dc41445f6f87173c3adaad881c106302bf357bc24bc1cecb6b64a",
+        "artifact_sha256": {"python": "85cd44d02ba6437773c5bbd22e183051d648de2e7d6b014e1ef29b855ba677a7"}
+      }
+    }
+  ],
+  "policies": ["strict", "screened_then_ranked"],
+  "maximum_candidate_fits": 32,
+  "maximum_new_student_fits": 12,
+  "baseline_teacher_fits": 0,
+  "ordinary_baseline_student_fits": 0,
+  "retention": "Keep all models and resume files; archive results and predictions; no automatic deletion",
+  "inference": "Same-code canonical CPU FP32 test evaluation for both arms; BF16 training/selection inherited from pinned baselines",
+  "interpretation": "Exploratory two-policy pilot; no localization-only or capacity-matched random controls; test sets previously inspected"
+}

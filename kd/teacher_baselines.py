@@ -101,6 +101,8 @@ class TeacherBaselineSpec:
                 raise ValueError("Repair options require the teacher_repair condition")
             if shortcut:
                 self.repair.validate()
+                if self.repair.screening_policy != "strict":
+                    raise ValueError("Flexible screening is not implemented for shortcut datasets")
             else:
                 for seed in self.teacher_seeds:
                     repair_spec(self, seed)
@@ -126,7 +128,7 @@ class TeacherBaselineSpec:
                       "student_selection_metric": self.student_selection_metric,
                       "temperature": self.temperature, "kd_weight": self.kd_weight,
                       "warmup_epochs": self.warmup_epochs,
-                      "repair": (self.repair.__dict__ if self.repair is not None else None)}
+                      "repair": (self.repair.to_dict() if self.repair is not None else None)}
         if self.matrix_binding is not None:
             value["matrix_binding"] = self.matrix_binding
         if self.student_weights is not None:
@@ -195,7 +197,8 @@ def _transfer_settings(spec):
 def plan_study(spec, output):
     verify_matrix_binding(spec, output)
     teachers, students, supervised = study_configs(spec, output)
-    repair_candidates = (len(spec.teacher_seeds) * len(spec.repair.channel_budgets)
+    repair_candidates = (len(spec.teacher_seeds)
+                         * len(spec.repair.parameter_budget_fractions or spec.repair.channel_budgets)
                          * len(spec.repair.learning_rates) if spec.repair is not None else 0)
     counts = {"teachers": len(teachers), "kd_students": len(students),
               "supervised_students": len(supervised),

@@ -1,0 +1,58 @@
+{
+  "teacher": {
+    "name": "teacher",
+    "output_dir": "/workspace/kd-repair-pilot/study",
+    "data": {
+      "source": "cinic10",
+      "root": "/workspace/kd-repair-pilot/data",
+      "dataset_version": "1.0",
+      "dataset_profile": "lt-if10",
+      "num_classes": 10,
+      "image_size": 32,
+      "preprocessing": "imagenet-smallstem-v1",
+      "augmentation": "basic",
+      "horizontal_flip": true,
+      "download": false,
+      "split_seed": 2026
+    },
+    "student": {"name": "resnet34_smallstem", "weights": "IMAGENET1K_V1"},
+    "distillation": {"method": "supervised"},
+    "train": {
+      "epochs": 100,
+      "batch_size": 128,
+      "learning_rate": 0.001,
+      "momentum": 0.9,
+      "weight_decay": 0.0005,
+      "workers": 4,
+      "threads": 4,
+      "device": "cuda:0",
+      "precision": "bfloat16",
+      "cuda_mode": "fast",
+      "channels_last": true,
+      "persistent_workers": false,
+      "prefetch_factor": 2,
+      "seed": 41
+    },
+    "benchmark": {"warmup": 20, "iterations": 100}
+  },
+  "student_model": "resnet18_smallstem",
+  "student_weights": "IMAGENET1K_V1",
+  "teacher_seeds": [41],
+  "student_seeds": [42, 43, 44],
+  "teacher_selection_metric": "accuracy",
+  "student_selection_metric": "balanced_accuracy",
+  "temperature": 4.0,
+  "kd_weight": 0.5,
+  "warmup_epochs": 5,
+  "recipes": ["control", "balanced_softmax", "teacher_repair"],
+  "repair": {
+    "channel_budgets": [2, 4, 8],
+    "learning_rates": [0.001, 0.005],
+    "repair_epochs": 20,
+    "repair_samples_per_epoch": 640,
+    "repair_batch_size": 64,
+    "target_fraction": 0.2,
+    "companion_count": 5,
+    "allow_sparse_class_fallback": true
+  }
+}

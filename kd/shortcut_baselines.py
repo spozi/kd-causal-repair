@@ -41,6 +41,9 @@ def mechanism_conditions(spec):
 def validate_shortcut_spec(spec):
     if spec.teacher.data.source == "multiceleba" and (spec.repair is not None or "teacher_repair" in spec.recipes):
         raise ValueError("MultiCelebA currently supports baseline/KD only; facial-attribute repair is not validated")
+    if spec.repair is not None and (spec.repair.parameter_budget_fractions
+                                    or spec.repair.max_preservation_kl is not None):
+        raise ValueError("Parameter-normalized repair and preservation KL constraints are not implemented for shortcut datasets")
     policy = spec.group_policy
     if (not isinstance(policy, dict) or set(policy) != set(DEFAULT_GROUP_POLICY)
             or type(policy.get("version")) is not int or policy["version"] != 1):

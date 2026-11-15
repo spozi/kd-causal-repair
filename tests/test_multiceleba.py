@@ -14,7 +14,7 @@ from kd.teacher_baselines import load_spec, study_configs, plan_study
 from kd.teacher_baseline_matrix import materialize_matrix_plan, matrix_jobs
 from kd.teacher_repair_baseline import TeacherRepairOptions
 from kd.training_provenance import training_provenance
-from test_shortcut_benchmark import multiceleba_release
+from tests.test_shortcut_benchmark import multiceleba_release
 
 
 class MultiCelebATests(unittest.TestCase):
@@ -25,6 +25,7 @@ class MultiCelebATests(unittest.TestCase):
     def test_shipped_bf16_config_matches_generator_and_plans_without_data_or_models(self):
         path = Path(__file__).resolve().parents[1] / "configs/teacher_baselines/multiceleba_bf16.json"
         spec = load_spec(path)
+        self.assertEqual(spec.teacher.train.batch_size, 128)
         generated = matrix_jobs(datasets=("multiceleba",), workers=4)[0]["study"]
         actual = spec.to_dict()
         generated["teacher"]["output_dir"] = actual["teacher"]["output_dir"]
@@ -43,6 +44,10 @@ class MultiCelebATests(unittest.TestCase):
             self.assertIsNone(spec.teacher_learning_rates)
             for run in plan["teacher_runs"]:
                 self.assertEqual(run["config"]["train"]["learning_rate"], 0.001)
+            for run in plan["teacher_runs"] + plan["student_runs"]:
+                self.assertEqual(run["config"]["train"]["batch_size"], 128)
+            for config in plan["supervised_student_runs"]:
+                self.assertEqual(config["train"]["batch_size"], 128)
 
     def test_groups_geometry_provenance_and_no_test_image_access_when_fitting(self):
         with tempfile.TemporaryDirectory() as temp:
